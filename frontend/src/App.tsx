@@ -21,19 +21,28 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
-import { getConfig, getHealth, getPrice, getStrategySignal, scanArbitrage } from "./lib/api";
+import {
+  getConfig,
+  getHealth,
+  getOrderHistory,
+  getPrice,
+  getStrategySignal,
+  placeOrder,
+  scanArbitrage,
+} from "./lib/api";
 import { formatNumber, formatPercent } from "./lib/format";
 import type {
   ArbitrageOpportunity,
   ArbitrageScan,
   Health,
+  OrderHistoryEntry,
   PriceResponse,
   PublicConfig,
   StrategyId,
   TradeSignal,
 } from "./types";
 
-type Page = "dashboard" | "setup-help" | "strategy-lab";
+type Page = "dashboard" | "setup-help" | "auto-trader-guide" | "strategy-lab" | "execution-control";
 type Theme = "light" | "dark";
 
 type BotForm = {
@@ -77,6 +86,7 @@ const navItems: Array<{ page: Page; label: string; icon: LucideIcon }> = [
   { page: "dashboard", label: "Dashboard", icon: Home },
   { page: "setup-help", label: "Setup Help", icon: LifeBuoy },
   { page: "strategy-lab", label: "Strategy Lab", icon: BarChart3 },
+  { page: "execution-control", label: "Execution Control", icon: ShieldCheck },
 ];
 
 const strategyDefinitions: StrategyDefinition[] = [
@@ -173,8 +183,10 @@ const defaultForm: BotForm = {
 
 function currentPage(): Page {
   const path = window.location.pathname;
+  if (path === "/setup-help/auto-trader") return "auto-trader-guide";
   if (path === "/setup-help") return "setup-help";
   if (path === "/strategy-lab") return "strategy-lab";
+  if (path === "/execution-control") return "execution-control";
   return "dashboard";
 }
 
@@ -219,7 +231,12 @@ export default function App() {
   }
 
   function goTo(nextPage: Page) {
-    const path = nextPage === "dashboard" ? "/" : `/${nextPage}`;
+    const path =
+      nextPage === "dashboard"
+        ? "/"
+        : nextPage === "auto-trader-guide"
+          ? "/setup-help/auto-trader"
+          : `/${nextPage}`;
     window.history.pushState({}, "", path);
     setPage(nextPage);
   }
@@ -242,8 +259,10 @@ export default function App() {
             refreshSystem={refreshSystem}
           />
         )}
-        {page === "setup-help" && <SetupHelp system={system} />}
+        {page === "setup-help" && <SetupHelp system={system} setPage={goTo} />}
+        {page === "auto-trader-guide" && <AutoTraderGuide setPage={goTo} />}
         {page === "strategy-lab" && <StrategyLab system={system} />}
+        {page === "execution-control" && <ExecutionControl system={system} refreshSystem={refreshSystem} />}
       </main>
     </div>
   );
@@ -298,7 +317,7 @@ function Header({
         <nav className="flex flex-wrap gap-2" aria-label="Primary navigation">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const active = page === item.page;
+            const active = page === item.page || (page === "auto-trader-guide" && item.page === "setup-help");
             return (
               <button
                 key={item.page}
@@ -697,7 +716,7 @@ function StrategyOutputPanel({
   );
 }
 
-function SetupHelp({ system }: { system: LoadState }) {
+function SetupHelp({ system, setPage }: { system: LoadState; setPage: (page: Page) => void }) {
   const commands = [
     "py -3.11 -m venv .venv",
     ".\\.venv\\Scripts\\Activate.ps1",
@@ -715,6 +734,26 @@ function SetupHelp({ system }: { system: LoadState }) {
         title="Setup Help"
         body="Follow this page from top to bottom when preparing the bot on a new machine, adding keys, rebuilding the interface, or moving from paper trading toward live execution."
       />
+
+      <Panel
+        title="Auto-Trader Guide"
+        icon={Bot}
+        action={
+          <button
+            type="button"
+            onClick={() => setPage("auto-trader-guide")}
+            className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-slate-800 px-3 py-2 text-sm font-black text-white transition hover:bg-slate-900"
+          >
+            <Route className="h-4 w-4" />
+            Open guide
+          </button>
+        }
+      >
+        <p className="text-sm leading-6 text-slate-600">
+          A full auto-trader needs a scheduled worker that gathers market data, runs one selected
+          strategy, checks risk, submits approved orders, and records every result.
+        </p>
+      </Panel>
 
       <section className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
         <Panel title="Install and Run" icon={Cable}>
@@ -814,6 +853,451 @@ function SetupHelp({ system }: { system: LoadState }) {
         </div>
       </Panel>
     </div>
+  );
+}
+
+function AutoTraderGuide({ setPage }: { setPage: (page: Page) => void }) {
+  return (
+    <div className="grid gap-5">
+      <PageIntro
+        icon={Bot}
+        title="Auto-Trader Guide"
+        body="Use this as the build path for moving from manual analysis to a guarded scheduled worker. Keep each stage visible and auditable before enabling live orders."
+      />
+
+      <Panel
+        title="Execution Flow"
+        icon={Route}
+        action={
+          <button
+            type="button"
+            onClick={() => setPage("execution-control")}
+            className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-slate-800 px-3 py-2 text-sm font-black text-white transition hover:bg-slate-900"
+          >
+            <ShieldCheck className="h-4 w-4" />
+            Open controls
+          </button>
+        }
+      >
+        <div className="grid gap-3 lg:grid-cols-5">
+          {[
+            ["1", "Market data", "Fetch price, tickers, or OHLCV candles from CoinAPI or CCXT."],
+            ["2", "Strategy", "Run the selected bot and store the last signal with its reason."],
+            ["3", "Risk checks", "Check max order size, reference price, mode, and permissions."],
+            ["4", "Order gate", "Submit approved orders through /api/orders only."],
+            ["5", "History", "Record order status, paper/live mode, and exchange response."],
+          ].map(([step, title, body]) => (
+            <div key={step} className="rounded-lg border border-line bg-slate-50 p-4">
+              <span className="grid h-8 w-8 place-items-center rounded-md bg-teal-750 text-sm font-black text-white">
+                {step}
+              </span>
+              <h3 className="mt-3 text-base font-black">{title}</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">{body}</p>
+            </div>
+          ))}
+        </div>
+      </Panel>
+
+      <section className="grid gap-5 lg:grid-cols-3">
+        <GuideCard
+          icon={Activity}
+          title="Worker Schedule"
+          body="Run the worker on an interval such as every 5, 15, or 60 minutes. Avoid overlapping runs and record every decision."
+        />
+        <GuideCard
+          icon={ShieldCheck}
+          title="Approval Gate"
+          body="A signal is not an order. Require risk approval and keep PAPER_TRADING=true until the history looks correct."
+        />
+        <GuideCard
+          icon={KeyRound}
+          title="Secrets"
+          body="Use exchange API keys with view/trade permissions. Never store wallet seeds, private keys, or withdrawal-enabled bot keys."
+        />
+      </section>
+
+      <Panel title="Implementation Checklist" icon={CheckCircle2}>
+        <div className="grid gap-3 md:grid-cols-2">
+          <ChecklistItem
+            ready
+            title="Persist decisions"
+            body="Move order history from in-memory storage to SQLite/PostgreSQL before production."
+          />
+          <ChecklistItem
+            ready
+            title="One active worker"
+            body="Use a lock so only one scheduled run can place orders at a time."
+          />
+          <ChecklistItem
+            ready
+            title="Dry-run replay"
+            body="Backtest or replay saved candles before enabling any live execution flags."
+          />
+          <ChecklistItem
+            ready
+            title="Kill switch"
+            body="Add a single environment flag or UI control that blocks all order placement immediately."
+          />
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function ExecutionControl({
+  system,
+  refreshSystem,
+}: {
+  system: LoadState;
+  refreshSystem: () => Promise<void>;
+}) {
+  const [form, setForm] = useState({
+    strategy: "trend_following" as StrategyId,
+    source: "exchange" as BotForm["dataSource"],
+    symbol: "BTC/USDT",
+    exchangeId: "binance",
+    exchangeIds: "binance,kraken,kucoin",
+    coinapiSymbol: "BINANCE_SPOT_BTC_USDT",
+    amount: "0.0001",
+    referencePrice: "50000",
+    confirmLive: false,
+  });
+  const [lastSignal, setLastSignal] = useState<TradeSignal | undefined>();
+  const [orderResult, setOrderResult] = useState<Record<string, unknown> | undefined>();
+  const [history, setHistory] = useState<OrderHistoryEntry[]>([]);
+  const [busyAction, setBusyAction] = useState<"signal" | "order" | "history" | "status" | undefined>();
+  const [notice, setNotice] = useState<Notice | undefined>();
+
+  useEffect(() => {
+    setForm((previous) => ({
+      ...previous,
+      symbol: system.config?.default_symbol || previous.symbol,
+      exchangeId: system.config?.exchange_ids[0] || previous.exchangeId,
+      exchangeIds: system.config?.exchange_ids.length
+        ? system.config.exchange_ids.join(",")
+        : previous.exchangeIds,
+      coinapiSymbol: system.config?.default_coinapi_symbol_id || previous.coinapiSymbol,
+    }));
+  }, [system.config]);
+
+  useEffect(() => {
+    void loadHistory();
+  }, []);
+
+  const amount = Number(form.amount);
+  const referencePrice = Number(form.referencePrice);
+  const maxOrder = Number(system.config?.max_order_usd ?? 0);
+  const notional = amount * referencePrice;
+  const proposedSide =
+    lastSignal?.action === "buy" || lastSignal?.action === "sell" ? lastSignal.action : undefined;
+  const proposedOrder = proposedSide
+    ? {
+        exchange_id: form.exchangeId,
+        symbol: form.symbol,
+        side: proposedSide,
+        amount,
+        order_type: "market",
+        price: null,
+        reference_price: referencePrice,
+        confirm_live_trading: form.confirmLive,
+      }
+    : undefined;
+  const riskChecks = [
+    {
+      ready: Boolean(lastSignal),
+      title: "Signal available",
+      body: lastSignal ? lastSignal.reason : "Generate a strategy signal first.",
+    },
+    {
+      ready: Boolean(proposedSide),
+      title: "Action is tradeable",
+      body: proposedSide ? `Signal proposes a ${proposedSide} order.` : "Hold and arbitrage signals do not create a single market order.",
+    },
+    {
+      ready: Number.isFinite(amount) && amount > 0,
+      title: "Amount is positive",
+      body: `Amount: ${form.amount || "-"}`,
+    },
+    {
+      ready: Number.isFinite(referencePrice) && referencePrice > 0,
+      title: "Reference price is positive",
+      body: `Reference price: ${form.referencePrice || "-"}`,
+    },
+    {
+      ready: maxOrder > 0 && Number.isFinite(notional) && notional > 0 && notional <= maxOrder,
+      title: "Inside max order limit",
+      body: maxOrder ? `$${notional.toFixed(2)} notional against $${maxOrder.toFixed(2)} max.` : "Risk config is not loaded yet.",
+    },
+  ];
+  const riskApproved = riskChecks.every((item) => item.ready);
+
+  async function runSignal() {
+    setBusyAction("signal");
+    setNotice(undefined);
+    setOrderResult(undefined);
+    try {
+      const result = await getStrategySignal({
+        strategy: form.strategy,
+        source: form.source,
+        symbol: form.symbol,
+        exchange_ids: form.exchangeIds,
+        exchange_id: form.exchangeId,
+        coinapi_symbol_id: form.coinapiSymbol,
+        period_id: "1HRS",
+        timeframe: "1h",
+        limit: 100,
+      });
+      setLastSignal(result);
+    } catch (error) {
+      setNotice({
+        title: "Signal failed",
+        body: error instanceof Error ? error.message : "Unable to generate a signal.",
+        tone: "danger",
+      });
+    } finally {
+      setBusyAction(undefined);
+    }
+  }
+
+  async function submitOrder() {
+    if (!proposedOrder || !riskApproved) {
+      setNotice({
+        title: "Order blocked",
+        body: "The proposed order must pass every risk check before it can be submitted.",
+        tone: "warning",
+      });
+      return;
+    }
+
+    setBusyAction("order");
+    setNotice(undefined);
+    try {
+      const result = await placeOrder(proposedOrder);
+      setOrderResult(result);
+      await loadHistory();
+    } catch (error) {
+      setNotice({
+        title: "Order rejected",
+        body: error instanceof Error ? error.message : "The order request failed.",
+        tone: "danger",
+      });
+      await loadHistory();
+    } finally {
+      setBusyAction(undefined);
+    }
+  }
+
+  async function loadHistory() {
+    setBusyAction((current) => current ?? "history");
+    try {
+      const result = await getOrderHistory();
+      setHistory(result.orders);
+    } catch (error) {
+      setNotice({
+        title: "History unavailable",
+        body: error instanceof Error ? error.message : "Unable to load order history.",
+        tone: "warning",
+      });
+    } finally {
+      setBusyAction((current) => (current === "history" ? undefined : current));
+    }
+  }
+
+  async function reloadStatus() {
+    setBusyAction("status");
+    try {
+      await refreshSystem();
+      await loadHistory();
+    } finally {
+      setBusyAction(undefined);
+    }
+  }
+
+  function updateField(key: keyof typeof form, value: string | boolean) {
+    setForm((previous) => ({ ...previous, [key]: value }));
+  }
+
+  return (
+    <div className="grid gap-5">
+      <PageIntro
+        icon={ShieldCheck}
+        title="Execution Control"
+        body="Review paper/live mode, the latest signal, a proposed order, risk approval, and order history before any order can move toward live execution."
+      />
+
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <Metric
+          label="Mode"
+          value={system.config?.paper_trading === false ? "Live-capable" : "Paper"}
+          caption={system.config?.enable_live_trading ? "Live flag enabled" : "Live flag off"}
+        />
+        <Metric
+          label="Max Order"
+          value={system.config ? `$${system.config.max_order_usd}` : "-"}
+          caption="Risk manager hard cap"
+        />
+        <Metric
+          label="Last Signal"
+          value={lastSignal?.action.toUpperCase() ?? "-"}
+          caption={lastSignal?.strategy ?? "No signal generated"}
+        />
+        <Metric
+          label="Risk Approval"
+          value={riskApproved ? "Approved" : "Blocked"}
+          caption={riskApproved ? "Ready for order gate" : "Needs checks"}
+        />
+      </section>
+
+      <section className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+        <Panel title="Execution Inputs" icon={Bot}>
+          <div className="grid gap-4 md:grid-cols-2">
+            <SelectField
+              label="Strategy"
+              help="Signal source for the proposed order."
+              value={form.strategy}
+              onChange={(value) => updateField("strategy", value as StrategyId)}
+              options={strategyDefinitions.map((item) => ({ value: item.id, label: item.label }))}
+            />
+            <SelectField
+              label="Source"
+              help="OHLCV provider for candle strategies."
+              value={form.source}
+              onChange={(value) => updateField("source", value as BotForm["dataSource"])}
+              options={[
+                { value: "coinapi", label: "CoinAPI" },
+                { value: "exchange", label: "Exchange OHLCV" },
+              ]}
+              disabled={form.strategy === "arbitrage"}
+            />
+            <TextField
+              label="Symbol"
+              help="CCXT trading pair."
+              value={form.symbol}
+              onChange={(value) => updateField("symbol", value)}
+            />
+            <TextField
+              label="Exchange"
+              help="Exchange used for OHLCV and orders."
+              value={form.exchangeId}
+              onChange={(value) => updateField("exchangeId", value)}
+            />
+            <TextField
+              label="Amount"
+              help="Base asset amount to trade."
+              value={form.amount}
+              onChange={(value) => updateField("amount", value)}
+            />
+            <TextField
+              label="Reference price"
+              help="Used for risk notional checks."
+              value={form.referencePrice}
+              onChange={(value) => updateField("referencePrice", value)}
+            />
+          </div>
+          <label className="mt-4 flex gap-3 rounded-lg border border-line bg-slate-50 p-4 text-sm leading-6 text-slate-600">
+            <input
+              type="checkbox"
+              checked={form.confirmLive}
+              onChange={(event) => updateField("confirmLive", event.target.checked)}
+              className="mt-1 h-4 w-4"
+            />
+            <span>
+              Confirm live trading. This still only works if `PAPER_TRADING=false` and
+              `ENABLE_LIVE_TRADING=true` are configured on the backend.
+            </span>
+          </label>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <ActionButton
+              icon={Play}
+              label="Generate signal"
+              loading={busyAction === "signal"}
+              tone="slate"
+              onClick={() => void runSignal()}
+            />
+            <ActionButton
+              icon={ShieldCheck}
+              label="Submit approved order"
+              loading={busyAction === "order"}
+              disabled={!riskApproved}
+              onClick={() => void submitOrder()}
+            />
+            <ActionButton
+              icon={RefreshCw}
+              label="Reload status"
+              loading={busyAction === "status"}
+              tone="light"
+              onClick={() => void reloadStatus()}
+            />
+          </div>
+          {notice && <Alert tone={notice.tone} title={notice.title} body={notice.body} />}
+        </Panel>
+
+        <Panel title="Proposed Order" icon={Route} action={<SignalBadge action={lastSignal?.action ?? "hold"} />}>
+          <p className="text-sm leading-6 text-slate-600">
+            {lastSignal?.reason ?? "Generate a signal to build a proposed order."}
+          </p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <SignalStat label="Side" value={proposedSide ?? "-"} />
+            <SignalStat label="Notional" value={Number.isFinite(notional) ? `$${notional.toFixed(2)}` : "-"} />
+            <SignalStat label="Mode" value={system.config?.paper_trading === false ? "Live-capable" : "Paper"} />
+          </div>
+          <div className="mt-4 grid gap-3">
+            {riskChecks.map((item) => (
+              <ChecklistItem key={item.title} ready={item.ready} title={item.title} body={item.body} />
+            ))}
+          </div>
+          {proposedOrder ? <PayloadDetails payload={proposedOrder} /> : null}
+          {orderResult ? <PayloadDetails payload={orderResult} /> : null}
+        </Panel>
+      </section>
+
+      <Panel
+        title="Order History"
+        icon={Activity}
+        action={
+          <ActionButton
+            icon={RefreshCw}
+            label="Refresh history"
+            loading={busyAction === "history"}
+            tone="light"
+            onClick={() => void loadHistory()}
+          />
+        }
+      >
+        {history.length ? (
+          <div className="grid gap-3">
+            {history.map((item) => (
+              <OrderHistoryRow key={item.id} item={item} />
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            title="No order events yet"
+            body="Submit a paper order from this page to see the execution audit trail."
+          />
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function OrderHistoryRow({ item }: { item: OrderHistoryEntry }) {
+  return (
+    <article className="rounded-lg border border-line bg-slate-50 p-4">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <strong className="text-base font-black">
+          #{item.id} {item.side.toUpperCase()} {item.symbol}
+        </strong>
+        <span className="rounded-lg bg-slate-100 px-3 py-1 text-sm font-black uppercase text-slate-700">
+          {item.status}
+        </span>
+      </div>
+      <p className="mt-2 text-sm leading-6 text-slate-600">
+        {item.exchange_id} / amount {item.amount} / reference{" "}
+        {item.reference_price ? `$${item.reference_price}` : "-"} /{" "}
+        {item.paper_trading ? "paper" : "live-capable"} / {new Date(item.created_at).toLocaleString()}
+      </p>
+    </article>
   );
 }
 
@@ -1047,12 +1531,14 @@ function ActionButton({
   icon: Icon,
   label,
   loading,
+  disabled = false,
   tone = "teal",
   onClick,
 }: {
   icon: LucideIcon;
   label: string;
   loading: boolean;
+  disabled?: boolean;
   tone?: "teal" | "slate" | "light";
   onClick: () => void;
 }) {
@@ -1065,8 +1551,8 @@ function ActionButton({
     <button
       type="button"
       onClick={onClick}
-      disabled={loading}
-      className={`inline-flex min-h-11 min-w-36 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-black transition disabled:cursor-wait disabled:opacity-60 ${classes}`}
+      disabled={loading || disabled}
+      className={`inline-flex min-h-11 min-w-36 items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-black transition disabled:cursor-not-allowed disabled:opacity-60 ${classes}`}
     >
       <Icon className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
       {label}

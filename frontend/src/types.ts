@@ -89,3 +89,35 @@ export type PriceResponse = {
   symbol?: string;
   warning?: string;
 };
+
+export type OrderRequest = {
+  exchange_id: string;
+  symbol: string;
+  side: "buy" | "sell";
+  amount: number;
+  order_type: string;
+  price?: number | null;
+  reference_price?: number | null;
+  confirm_live_trading: boolean;
+};
+
+export type OrderHistoryEntry = {
+  id: number;
+  created_at: string;
+  status: string;
+  exchange_id: string;
+  symbol: string;
+  side: "buy" | "sell";
+  amount: number;
+  order_type: string;
+  price?: number | null;
+  reference_price?: number | null;
+  paper_trading: boolean;
+  live_enabled: boolean;
+  confirm_live_trading: boolean;
+  result?: Record<string, unknown>;
+};
+
+export type OrderHistoryResponse = {
+  orders: OrderHistoryEntry[];
+};

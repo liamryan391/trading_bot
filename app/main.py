@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -40,6 +40,7 @@ app = FastAPI(
     ),
 )
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+ORDER_HISTORY: list[dict[str, Any]] = []
 
 
 def _json(data: Any) -> Any:
@@ -78,8 +79,18 @@ async def setup_help() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/setup-help/auto-trader", include_in_schema=False)
+async def auto_trader_guide() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
+
+
 @app.get("/strategy-lab", include_in_schema=False)
 async def strategy_lab() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/execution-control", include_in_schema=False)
+async def execution_control() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
@@ -365,7 +376,7 @@ async def order(
     risk = RiskManager(settings)
     try:
         risk.validate_order(request.amount, request.reference_price or request.price)
-        return await gateway.place_order(
+        result = await gateway.place_order(
             exchange_id=request.exchange_id,
             symbol=request.symbol,
             side=request.side,
@@ -374,8 +385,45 @@ async def order(
             price=request.price,
             confirm_live_trading=request.confirm_live_trading,
         )
-    except (RiskError, ExchangeError) as exc:
+        event = _record_order_event(request, result, settings)
+        return {**_json(result), "history_event": event}
+    except RiskError as exc:
+        _record_order_event(request, {"status": "rejected", "message": str(exc)}, settings)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ExchangeError as exc:
+        _record_order_event(request, {"status": "failed", "message": str(exc)}, settings)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/api/orders/history")
+async def order_history(limit: int = Query(default=25, ge=1, le=100)) -> Any:
+    return {"orders": list(reversed(ORDER_HISTORY[-limit:]))}
+
+
+def _record_order_event(
+    request: OrderRequest,
+    result: dict[str, Any],
+    settings: Settings,
+) -> dict[str, Any]:
+    event = {
+        "id": len(ORDER_HISTORY) + 1,
+        "created_at": datetime.now(UTC),
+        "status": result.get("status", "submitted"),
+        "exchange_id": request.exchange_id,
+        "symbol": request.symbol,
+        "side": request.side,
+        "amount": request.amount,
+        "order_type": request.order_type,
+        "price": request.price,
+        "reference_price": request.reference_price,
+        "paper_trading": settings.paper_trading,
+        "live_enabled": settings.enable_live_trading,
+        "confirm_live_trading": request.confirm_live_trading,
+        "result": result,
+    }
+    payload = _json(event)
+    ORDER_HISTORY.append(payload)
+    return payload
 
 
 async def _load_candles(

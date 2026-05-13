@@ -1,6 +1,8 @@
 import type {
   ArbitrageScan,
   Health,
+  OrderHistoryResponse,
+  OrderRequest,
   PriceResponse,
   PublicConfig,
   StrategySignalRequest,
@@ -79,4 +81,15 @@ export function getStrategySignal(body: StrategySignalRequest) {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export function placeOrder(body: OrderRequest) {
+  return request<Record<string, unknown>>("/api/orders", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function getOrderHistory() {
+  return request<OrderHistoryResponse>("/api/orders/history");
 }
