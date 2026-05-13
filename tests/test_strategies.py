@@ -6,6 +6,7 @@ from decimal import Decimal
 from app.domain import Candle, Ticker
 from app.strategies.arbitrage import ArbitrageStrategy
 from app.strategies.mean_reversion import MeanReversionStrategy
+from app.strategies.portfolio_bots import DCAStrategy, GridTradingStrategy, MarketMakingStrategy
 from app.strategies.trend_following import TrendFollowingStrategy
 
 
@@ -57,6 +58,37 @@ class StrategyTests(unittest.TestCase):
 
         self.assertEqual(signal.action, "buy")
         self.assertGreater(signal.confidence, 0.5)
+
+    def test_grid_trading_returns_grid_levels(self) -> None:
+        signal = GridTradingStrategy().signal(
+            "BTC/USDT",
+            [Candle(None, 100, 105, 98, 102, 10)],
+            {"latest_close": 102, "atr_14": 4},
+        )
+
+        self.assertEqual(signal.action, "hold")
+        self.assertIn("suggested_grid_levels", signal.metadata)
+
+    def test_dca_emits_buy_when_market_not_overheated(self) -> None:
+        signal = DCAStrategy().signal(
+            "BTC/USDT",
+            [Candle(None, 100, 102, 97, 98, 10)],
+            {"latest_close": 98, "sma_20": 100, "rsi_14": 42},
+        )
+
+        self.assertEqual(signal.action, "buy")
+        self.assertGreater(signal.confidence, 0.4)
+
+    def test_market_making_returns_passive_quotes(self) -> None:
+        signal = MarketMakingStrategy().signal(
+            "BTC/USDT",
+            [Candle(None, 100, 103, 99, 101, 10)],
+            {"latest_close": 101, "atr_14": 3},
+        )
+
+        self.assertEqual(signal.action, "hold")
+        self.assertIn("suggested_bid", signal.metadata)
+        self.assertIn("suggested_ask", signal.metadata)
 
 
 if __name__ == "__main__":

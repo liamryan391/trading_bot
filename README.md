@@ -19,7 +19,7 @@ This is not financial advice. The bot is built to start in paper mode so you can
 - CoinAPI exchange rates and OHLCV market data.
 - CCXT exchange ticker, OHLCV, balance, and order gateway.
 - TA-Lib indicators when installed, with a pandas fallback if TA-Lib is not available.
-- Strategies for arbitrage, trend following, and mean reversion.
+- Strategies for arbitrage, trend following, mean reversion, GRID trading, DCA, and market making.
 - Paper-trading default, live-trading opt-in, sandbox mode, and max order notional checks.
 
 ## Requirements
@@ -116,12 +116,25 @@ When using Vite dev mode, keep the FastAPI backend running on `http://127.0.0.1:
 2. Open the dashboard.
 3. Check that `/health` is OK and CoinAPI is configured.
 4. Click `Refresh price` to fetch a CoinAPI exchange rate.
-5. Click `Analyse signal` to run trend following or mean reversion.
-6. Click `Scan arbitrage` to compare bid/ask prices across configured CCXT exchanges.
+5. Choose the strategy from the selector.
+6. Run the selected bot. Arbitrage scans exchange tickers; the other bots analyse OHLCV candles.
 7. Review the JSON output before trusting a signal.
 8. Keep `PAPER_TRADING=true` while testing.
 
 If CoinAPI returns a quota/subscription error, the dashboard falls back to CCXT public exchange data for `Refresh price` and `Analyse signal`. The warning is still shown so you know CoinAPI did not provide the data.
+
+## Dashboard Field Guide
+
+- `Base`: the asset being priced, for example `BTC`.
+- `Quote`: the currency used to price the base asset, for example `USD` or `USDT`.
+- `Exchange symbol`: the CCXT trading pair used by exchanges, for example `BTC/USDT`.
+- `CoinAPI symbol`: the CoinAPI market id used for CoinAPI OHLCV candles, for example `BINANCE_SPOT_BTC_USDT`.
+- `Exchanges`: comma-separated CCXT exchange ids used by arbitrage scans, for example `binance,kraken,kucoin`.
+- `Strategy`: the bot logic used by the main dashboard output panel.
+- `Source`: the candle provider for non-arbitrage strategies. Use `CoinAPI` for CoinAPI candles or `Exchange OHLCV` for CCXT exchange candles.
+- `OHLCV exchange`: the exchange used when `Source` is `Exchange OHLCV`, and also the fallback exchange if CoinAPI is unavailable.
+
+Trend Following is the default selected strategy because it is the safest starter candle-based signal. Arbitrage is different from the candle strategies: it compares live bid/ask tickers across several exchanges, so the dashboard now switches the main output panel when Arbitrage is selected.
 
 ## Strategy Notes
 
@@ -141,6 +154,24 @@ Mean reversion:
 
 - Uses Bollinger Bands and RSI.
 - Looks for prices stretched below the lower band or above the upper band.
+
+GRID trading bot:
+
+- Builds passive buy and sell levels around the latest price.
+- Uses ATR when available to avoid grids that are too tight for current volatility.
+- Returns a plan rather than forcing an immediate market order.
+
+DCA bot:
+
+- Checks whether the next scheduled accumulation buy should proceed.
+- Pauses when RSI suggests the market is overheated.
+- Keeps sizing and execution controlled by the existing risk and order gates.
+
+Market making bot:
+
+- Builds suggested passive bid and ask quotes around fair value.
+- Uses ATR or a minimum spread to avoid quoting too tightly.
+- Still requires inventory limits, order-book depth checks, and live exchange permissions before production use.
 
 ## Order Safety
 
@@ -173,6 +204,7 @@ Example strategy request:
   "strategy": "trend_following",
   "source": "coinapi",
   "symbol": "BTC/USDT",
+  "exchange_ids": "binance,kraken,kucoin",
   "exchange_id": "binance",
   "coinapi_symbol_id": "BINANCE_SPOT_BTC_USDT",
   "period_id": "1HRS",

@@ -59,12 +59,19 @@ export type ArbitrageScan = {
   tickers: Ticker[];
 };
 
-export type StrategyId = "trend_following" | "mean_reversion";
+export type StrategyId =
+  | "arbitrage"
+  | "trend_following"
+  | "mean_reversion"
+  | "grid_trading"
+  | "dca"
+  | "market_making";
 
 export type StrategySignalRequest = {
   strategy: StrategyId;
   source: "coinapi" | "exchange";
   symbol: string;
+  exchange_ids?: string;
   exchange_id: string;
   coinapi_symbol_id: string;
   period_id: string;

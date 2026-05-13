@@ -17,9 +17,20 @@ class OrderRequest(BaseModel):
 
 
 class StrategySignalRequest(BaseModel):
-    strategy: Literal["trend_following", "mean_reversion"]
+    strategy: Literal[
+        "arbitrage",
+        "trend_following",
+        "mean_reversion",
+        "grid_trading",
+        "dca",
+        "market_making",
+    ]
     source: Literal["coinapi", "exchange"] = "coinapi"
     symbol: str = "BTC/USDT"
+    exchange_ids: str | None = Field(
+        default=None,
+        description="Comma-separated CCXT exchange ids for arbitrage",
+    )
     exchange_id: str = "binance"
     coinapi_symbol_id: str = "BINANCE_SPOT_BTC_USDT"
     period_id: str = "1HRS"

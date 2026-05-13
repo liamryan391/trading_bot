@@ -19,18 +19,33 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let payload: unknown = null;
   const text = await response.text();
   if (text) {
-    payload = JSON.parse(text);
+    payload = parseResponseBody(text, response.headers.get("content-type"));
   }
 
   if (!response.ok) {
     const detail =
       typeof payload === "object" && payload && "detail" in payload
         ? String((payload as { detail: unknown }).detail)
+        : typeof payload === "string" && payload.trim()
+          ? payload
         : response.statusText;
     throw new Error(detail);
   }
 
   return payload as T;
+}
+
+function parseResponseBody(text: string, contentType: string | null) {
+  const trimmed = text.trim();
+  const looksJson = trimmed.startsWith("{") || trimmed.startsWith("[");
+  if (contentType?.includes("application/json") || looksJson) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+  return text;
 }
 
 export function getHealth() {

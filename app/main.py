@@ -18,7 +18,15 @@ from app.services.coinapi import CoinApiClient, CoinApiError
 from app.services.exchange import ExchangeError, ExchangeGateway
 from app.services.indicators import HAS_TALIB, IndicatorEngine
 from app.services.risk import RiskError, RiskManager
-from app.strategies import ArbitrageStrategy, MeanReversionStrategy, TrendFollowingStrategy
+from app.strategies import (
+    ArbitrageStrategy,
+    DCAStrategy,
+    GridTradingStrategy,
+    MarketMakingStrategy,
+    MeanReversionStrategy,
+    TrendFollowingStrategy,
+)
+from app.strategies.base import IndicatorStrategy
 
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
@@ -98,16 +106,37 @@ async def strategies() -> dict[str, Any]:
             {
                 "id": "arbitrage",
                 "name": "Arbitrage",
+                "kind": "ticker",
                 "data_source": "CCXT tickers across configured exchanges",
             },
             {
                 "id": "trend_following",
                 "name": "Trend Following",
+                "kind": "ohlcv",
                 "data_source": "CoinAPI or CCXT OHLCV",
             },
             {
                 "id": "mean_reversion",
                 "name": "Mean Reversion",
+                "kind": "ohlcv",
+                "data_source": "CoinAPI or CCXT OHLCV",
+            },
+            {
+                "id": "grid_trading",
+                "name": "Grid Trading Bot",
+                "kind": "ohlcv",
+                "data_source": "CoinAPI or CCXT OHLCV",
+            },
+            {
+                "id": "dca",
+                "name": "DCA Bot",
+                "kind": "ohlcv",
+                "data_source": "CoinAPI or CCXT OHLCV",
+            },
+            {
+                "id": "market_making",
+                "name": "Market Making Bot",
+                "kind": "ohlcv",
                 "data_source": "CoinAPI or CCXT OHLCV",
             },
         ]
@@ -243,10 +272,31 @@ async def indicators(
 @app.post("/api/strategies/signal")
 async def strategy_signal(
     request: StrategySignalRequest,
+    settings: Settings = Depends(get_settings),
     client: CoinApiClient = Depends(coinapi_client),
     gateway: ExchangeGateway = Depends(exchange_gateway),
     engine: IndicatorEngine = Depends(indicator_engine),
 ) -> Any:
+    if request.strategy == "arbitrage":
+        ids = (
+            [item.strip() for item in request.exchange_ids.split(",") if item.strip()]
+            if request.exchange_ids
+            else None
+        )
+        try:
+            tickers = await gateway.fetch_tickers(request.symbol, ids)
+        except ExchangeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        strategy = ArbitrageStrategy(settings.min_arbitrage_profit_pct, settings.fee_buffer_pct)
+        signal = _json(strategy.signal(request.symbol, tickers))
+        signal["metadata"] = {
+            **signal.get("metadata", {}),
+            "data_source": "exchange_tickers",
+            "exchanges_scanned": [ticker.exchange for ticker in tickers],
+        }
+        return signal
+
     candles, data_source, warning = await _load_candles_with_metadata(
         source=request.source,
         symbol=request.symbol,
@@ -384,11 +434,17 @@ async def _load_candles_with_metadata(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-def _indicator_strategy(name: str) -> TrendFollowingStrategy | MeanReversionStrategy:
+def _indicator_strategy(name: str) -> IndicatorStrategy:
     if name == "trend_following":
         return TrendFollowingStrategy()
     if name == "mean_reversion":
         return MeanReversionStrategy()
+    if name == "grid_trading":
+        return GridTradingStrategy()
+    if name == "dca":
+        return DCAStrategy()
+    if name == "market_making":
+        return MarketMakingStrategy()
     raise HTTPException(status_code=404, detail=f"Unknown strategy: {name}")
 
 

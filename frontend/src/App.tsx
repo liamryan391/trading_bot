@@ -8,17 +8,21 @@ import {
   CircleAlert,
   Gauge,
   Home,
+  Info,
   KeyRound,
   LifeBuoy,
+  Moon,
   Play,
   RefreshCw,
   Route,
   ShieldCheck,
+  Sun,
   TrendingUp,
+  type LucideIcon,
 } from "lucide-react";
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { getConfig, getHealth, getPrice, getStrategySignal, scanArbitrage } from "./lib/api";
-import { formatNumber, formatPercent, titleCase } from "./lib/format";
+import { formatNumber, formatPercent } from "./lib/format";
 import type {
   ArbitrageOpportunity,
   ArbitrageScan,
@@ -30,6 +34,7 @@ import type {
 } from "./types";
 
 type Page = "dashboard" | "setup-help" | "strategy-lab";
+type Theme = "light" | "dark";
 
 type BotForm = {
   base: string;
@@ -55,10 +60,104 @@ type Notice = {
   tone: "warning" | "danger";
 };
 
-const navItems: Array<{ page: Page; label: string; icon: typeof Home }> = [
+type StrategyDefinition = {
+  id: StrategyId;
+  label: string;
+  shortLabel: string;
+  icon: LucideIcon;
+  kind: "ohlcv" | "ticker";
+  primaryAction: string;
+  description: string;
+  outputTitle: string;
+  emptyTitle: string;
+  emptyBody: string;
+};
+
+const navItems: Array<{ page: Page; label: string; icon: LucideIcon }> = [
   { page: "dashboard", label: "Dashboard", icon: Home },
   { page: "setup-help", label: "Setup Help", icon: LifeBuoy },
   { page: "strategy-lab", label: "Strategy Lab", icon: BarChart3 },
+];
+
+const strategyDefinitions: StrategyDefinition[] = [
+  {
+    id: "trend_following",
+    label: "Trend Following",
+    shortLabel: "Trend",
+    icon: TrendingUp,
+    kind: "ohlcv",
+    primaryAction: "Analyse trend",
+    description:
+      "Uses recent OHLCV candles, moving averages, MACD, and RSI to check whether the market is trending up or down.",
+    outputTitle: "Trend Following Signal",
+    emptyTitle: "Waiting for trend analysis",
+    emptyBody: "Run the bot to calculate indicators and decide whether trend conditions are buy, sell, or hold.",
+  },
+  {
+    id: "mean_reversion",
+    label: "Mean Reversion",
+    shortLabel: "Mean revert",
+    icon: Activity,
+    kind: "ohlcv",
+    primaryAction: "Analyse reversion",
+    description:
+      "Uses Bollinger Bands and RSI to check whether price is stretched away from its recent range and may revert.",
+    outputTitle: "Mean Reversion Signal",
+    emptyTitle: "Waiting for reversion analysis",
+    emptyBody: "Run the bot to compare price with Bollinger Bands and RSI.",
+  },
+  {
+    id: "arbitrage",
+    label: "Arbitrage",
+    shortLabel: "Arbitrage",
+    icon: Route,
+    kind: "ticker",
+    primaryAction: "Scan arbitrage",
+    description:
+      "Compares live bid and ask prices across the configured exchanges, then subtracts the fee buffer before showing opportunities.",
+    outputTitle: "Arbitrage Opportunities",
+    emptyTitle: "Ready to scan spreads",
+    emptyBody: "Run the bot to compare the configured exchanges and find cross-exchange spreads.",
+  },
+  {
+    id: "grid_trading",
+    label: "GRID Trading Bot",
+    shortLabel: "GRID",
+    icon: Gauge,
+    kind: "ohlcv",
+    primaryAction: "Build grid",
+    description:
+      "Builds passive buy and sell levels around the current price using volatility so the bot can work inside a range.",
+    outputTitle: "GRID Trading Plan",
+    emptyTitle: "Waiting for grid plan",
+    emptyBody: "Run the bot to calculate grid spacing and the nearest passive buy and sell levels.",
+  },
+  {
+    id: "dca",
+    label: "DCA (Dollar Cost Averaging)",
+    shortLabel: "DCA",
+    icon: RefreshCw,
+    kind: "ohlcv",
+    primaryAction: "Check DCA",
+    description:
+      "Checks whether the next scheduled accumulation buy is acceptable or should pause because the market is overheated.",
+    outputTitle: "DCA Signal",
+    emptyTitle: "Waiting for DCA check",
+    emptyBody: "Run the bot to decide whether the next dollar cost averaging entry should proceed.",
+  },
+  {
+    id: "market_making",
+    label: "Market Making Bot",
+    shortLabel: "Market making",
+    icon: Bot,
+    kind: "ohlcv",
+    primaryAction: "Quote market",
+    description:
+      "Prepares passive bid and ask quotes around fair value while flagging that inventory and order-book depth still need checks.",
+    outputTitle: "Market Making Quotes",
+    emptyTitle: "Waiting for maker quotes",
+    emptyBody: "Run the bot to calculate a fair value, passive bid, passive ask, and quoted spread.",
+  },
 ];
 
 const defaultForm: BotForm = {
@@ -83,6 +182,7 @@ export default function App() {
   const [page, setPage] = useState<Page>(currentPage());
   const [system, setSystem] = useState<LoadState>({ loading: true });
   const [form, setForm] = useState<BotForm>(defaultForm);
+  const [theme, setTheme] = useState<Theme>(initialTheme);
 
   useEffect(() => {
     void refreshSystem();
@@ -93,6 +193,10 @@ export default function App() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("trading-bot-theme", theme);
+  }, [theme]);
 
   async function refreshSystem() {
     setSystem((previous) => ({ ...previous, loading: true, error: undefined }));
@@ -121,8 +225,14 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-canvas text-ink">
-      <Header page={page} setPage={goTo} system={system} />
+    <div className={`min-h-screen bg-canvas text-ink ${theme === "dark" ? "theme-dark" : ""}`}>
+      <Header
+        page={page}
+        setPage={goTo}
+        system={system}
+        theme={theme}
+        toggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+      />
       <main className="mx-auto w-full max-w-7xl px-4 pb-12 pt-5 sm:px-6 lg:px-8">
         {page === "dashboard" && (
           <Dashboard
@@ -143,12 +253,17 @@ function Header({
   page,
   setPage,
   system,
+  theme,
+  toggleTheme,
 }: {
   page: Page;
   setPage: (page: Page) => void;
   system: LoadState;
+  theme: Theme;
+  toggleTheme: () => void;
 }) {
   const ready = system.health?.status === "ok";
+  const ThemeIcon = theme === "dark" ? Sun : Moon;
   return (
     <header className="border-b border-white/10 bg-teal-950 text-white">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
@@ -169,6 +284,14 @@ function Header({
             <StatusPill tone={system.config?.paper_trading ? "neutral" : "warning"} icon={ShieldCheck}>
               {system.config?.paper_trading === false ? "Live enabled" : "Paper mode"}
             </StatusPill>
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-3 py-1 text-sm font-extrabold text-white transition hover:bg-white/15 focus:bg-white/15"
+            >
+              <ThemeIcon className="h-4 w-4" />
+              {theme === "dark" ? "Light mode" : "Dark mode"}
+            </button>
           </div>
         </div>
 
@@ -212,12 +335,22 @@ function Dashboard({
   const [price, setPrice] = useState<PriceResponse | undefined>();
   const [signal, setSignal] = useState<TradeSignal | undefined>();
   const [arbitrage, setArbitrage] = useState<ArbitrageScan | undefined>();
-  const [busyAction, setBusyAction] = useState<"price" | "signal" | "arbitrage" | undefined>();
+  const [busyAction, setBusyAction] = useState<"price" | "strategy" | undefined>();
   const [notice, setNotice] = useState<Notice | undefined>();
 
   const config = system.config;
+  const strategy = strategyDefinition(form.strategy);
+  const StrategyIcon = strategy.icon;
+  const isArbitrage = strategy.kind === "ticker";
+  const sourceLabel = isArbitrage ? "Exchange tickers" : form.dataSource === "coinapi" ? "CoinAPI OHLCV" : "Exchange OHLCV";
 
-  async function runAction(action: "price" | "signal" | "arbitrage") {
+  useEffect(() => {
+    setSignal(undefined);
+    setArbitrage(undefined);
+    setNotice(undefined);
+  }, [form.strategy]);
+
+  async function runAction(action: "price" | "strategy") {
     setBusyAction(action);
     setNotice(undefined);
     try {
@@ -232,11 +365,19 @@ function Dashboard({
           });
         }
       }
-      if (action === "signal") {
+      if (action === "strategy") {
+        if (isArbitrage) {
+          const result = await scanArbitrage(form.symbol, form.exchanges);
+          setArbitrage(result);
+          setSignal(result.signal);
+          return;
+        }
+
         const result = await getStrategySignal({
           strategy: form.strategy,
           source: form.dataSource,
           symbol: form.symbol,
+          exchange_ids: form.exchanges,
           exchange_id: form.exchangeId,
           coinapi_symbol_id: form.coinapiSymbol,
           period_id: "1HRS",
@@ -253,9 +394,6 @@ function Dashboard({
             tone: "warning",
           });
         }
-      }
-      if (action === "arbitrage") {
-        setArbitrage(await scanArbitrage(form.symbol, form.exchanges));
       }
     } catch (error) {
       setNotice({
@@ -274,89 +412,122 @@ function Dashboard({
 
   return (
     <div className="grid gap-5">
-      <section className="overflow-hidden rounded-lg border border-line bg-panel p-4 shadow-panel">
+      <section className="overflow-hidden rounded-lg border border-line bg-panel p-5 shadow-panel">
+        <div className="mb-4 flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h2 className="text-xl font-black tracking-normal">Market Setup</h2>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600">
+              Configure the market, data source, and bot logic used by the main strategy panel.
+            </p>
+          </div>
+          <span className="inline-flex w-fit items-center gap-2 rounded-lg border border-line bg-slate-50 px-3 py-2 text-sm font-black text-slate-700">
+            <StrategyIcon className="h-4 w-4 text-teal-750" />
+            {strategy.label}
+          </span>
+        </div>
+
         <form
           className="grid gap-4 xl:grid-cols-12"
           onSubmit={(event: FormEvent) => {
             event.preventDefault();
-            void runAction("signal");
+            void runAction("strategy");
           }}
         >
-          <TextField label="Base" value={form.base} onChange={(value) => updateField("base", value)} />
-          <TextField label="Quote" value={form.quote} onChange={(value) => updateField("quote", value)} />
+          <TextField
+            label="Base"
+            help="Asset being priced, e.g. BTC."
+            value={form.base}
+            onChange={(value) => updateField("base", value)}
+          />
+          <TextField
+            label="Quote"
+            help="Pricing currency, e.g. USD or USDT."
+            value={form.quote}
+            onChange={(value) => updateField("quote", value)}
+          />
           <TextField
             className="xl:col-span-2"
             label="Exchange symbol"
+            help="CCXT pair format, e.g. BTC/USDT."
             value={form.symbol}
             onChange={(value) => updateField("symbol", value)}
           />
           <TextField
             className="xl:col-span-3"
             label="CoinAPI symbol"
+            help="CoinAPI market id for candles."
             value={form.coinapiSymbol}
             onChange={(value) => updateField("coinapiSymbol", value)}
           />
           <TextField
             className="xl:col-span-2"
             label="Exchanges"
+            help="Venues used by arbitrage scans."
             value={form.exchanges}
             onChange={(value) => updateField("exchanges", value)}
           />
           <SelectField
             className="xl:col-span-2"
             label="Strategy"
+            help="Bot logic for the output panel."
             value={form.strategy}
             onChange={(value) => updateField("strategy", value as StrategyId)}
-            options={[
-              { value: "trend_following", label: "Trend following" },
-              { value: "mean_reversion", label: "Mean reversion" },
-            ]}
+            options={strategyDefinitions.map((item) => ({ value: item.id, label: item.label }))}
           />
           <SelectField
             className="xl:col-span-2"
             label="Source"
+            help="OHLCV provider for candle bots."
             value={form.dataSource}
             onChange={(value) => updateField("dataSource", value as BotForm["dataSource"])}
             options={[
               { value: "coinapi", label: "CoinAPI" },
               { value: "exchange", label: "Exchange OHLCV" },
             ]}
+            disabled={isArbitrage}
           />
           <TextField
             className="xl:col-span-2"
             label="OHLCV exchange"
+            help="Exchange for OHLCV or fallback."
             value={form.exchangeId}
             onChange={(value) => updateField("exchangeId", value)}
+            disabled={isArbitrage}
           />
 
-          <div className="flex flex-wrap items-end gap-2 xl:col-span-12">
-            <ActionButton
-              icon={RefreshCw}
-              label="Refresh price"
-              loading={busyAction === "price"}
-              onClick={() => void runAction("price")}
-            />
-            <ActionButton
-              icon={Play}
-              label="Analyse signal"
-              loading={busyAction === "signal"}
-              tone="slate"
-              onClick={() => void runAction("signal")}
-            />
-            <ActionButton
-              icon={Route}
-              label="Scan arbitrage"
-              loading={busyAction === "arbitrage"}
-              tone="amber"
-              onClick={() => void runAction("arbitrage")}
-            />
-            <ActionButton
-              icon={Activity}
-              label="Reload status"
-              loading={system.loading}
-              tone="light"
-              onClick={() => void refreshSystem()}
-            />
+          <div className="border-t border-line pt-4 xl:col-span-12">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex gap-3 text-sm leading-6 text-slate-600">
+                <Info className="mt-0.5 h-5 w-5 shrink-0 text-teal-750" />
+                <p>
+                  Trend Following is selected by default because it is the safest starter signal for OHLCV candles.
+                  Arbitrage was previously separate because it uses live exchange tickers instead of candles; selecting
+                  it now switches the output panel to arbitrage opportunities.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <ActionButton
+                  icon={RefreshCw}
+                  label="Refresh price"
+                  loading={busyAction === "price"}
+                  onClick={() => void runAction("price")}
+                />
+                <ActionButton
+                  icon={isArbitrage ? Route : Play}
+                  label={strategy.primaryAction}
+                  loading={busyAction === "strategy"}
+                  tone="slate"
+                  onClick={() => void runAction("strategy")}
+                />
+                <ActionButton
+                  icon={Activity}
+                  label="Reload status"
+                  loading={system.loading}
+                  tone="light"
+                  onClick={() => void refreshSystem()}
+                />
+              </div>
+            </div>
           </div>
         </form>
 
@@ -369,74 +540,28 @@ function Dashboard({
           value={price ? formatNumber(price.rate, 8) : "-"}
           caption={price ? priceCaption(price) : "CoinAPI or exchange fallback"}
         />
+        <Metric label="Selected Bot" value={strategy.shortLabel} caption={strategy.kind === "ticker" ? "Ticker scan" : "Candle signal"} />
+        <Metric label="Market Data" value={sourceLabel} caption={isArbitrage ? form.exchanges : form.symbol} />
         <Metric
-          label="Mode"
+          label="Risk Mode"
           value={config?.paper_trading === false ? "Live" : "Paper"}
-          caption={config?.sandbox_mode ? "Sandbox on" : "Sandbox off"}
-        />
-        <Metric
-          label="Indicators"
-          value={system.health?.talib_backend ?? "-"}
-          caption="TA-Lib or fallback"
-        />
-        <Metric
-          label="Max order"
-          value={config ? `$${config.max_order_usd}` : "-"}
-          caption={config ? `${config.min_arbitrage_profit_pct}% min arbitrage` : "Risk limit"}
+          caption={config ? `$${config.max_order_usd} max order` : "Risk limit"}
         />
       </section>
 
-      <section className="grid gap-5 xl:grid-cols-2">
-        <Panel
-          title="Signal"
-          icon={TrendingUp}
-          action={<SignalBadge action={signal?.action ?? "hold"} />}
-        >
-          <p className="min-h-12 text-sm leading-6 text-slate-600">
-            {signal?.reason ?? "Run analysis to generate the next strategy signal."}
-          </p>
-          {signal && (
-            <div className="mt-4 grid gap-3 sm:grid-cols-3">
-              <SignalStat label="Strategy" value={titleCase(signal.strategy)} />
-              <SignalStat label="Confidence" value={`${Math.round(signal.confidence * 100)}%`} />
-              <SignalStat label="Symbol" value={signal.symbol} />
-            </div>
-          )}
-          {signal ? (
-            <CodeBlock payload={signal} />
-          ) : (
-            <div className="mt-4">
-              <EmptyState
-                title="Waiting for analysis"
-                body="Click Analyse signal to fetch candles, calculate indicators, and generate the strategy output."
-              />
-            </div>
-          )}
-        </Panel>
-
-        <Panel
-          title="Arbitrage"
-          icon={Route}
-          action={
-            <span className="rounded-lg border border-line bg-slate-50 px-3 py-1 text-sm font-black">
-              {arbitrage?.opportunities.length ?? 0}
-            </span>
-          }
-        >
-          <div className="grid gap-3">
-            {(arbitrage?.opportunities.length ?? 0) > 0 ? (
-              arbitrage?.opportunities.slice(0, 6).map((opportunity) => (
-                <OpportunityRow key={`${opportunity.buy_exchange}-${opportunity.sell_exchange}`} item={opportunity} />
-              ))
-            ) : (
-              <EmptyState
-                title="No qualifying spread yet"
-                body="Scan configured exchanges to compare bid and ask prices after the fee buffer."
-              />
-            )}
+      <section className="grid gap-5 xl:grid-cols-[1.35fr_0.65fr]">
+        <StrategyOutputPanel strategy={strategy} signal={signal} arbitrage={arbitrage} />
+        <Panel title="Strategy Details" icon={strategy.icon}>
+          <p className="text-sm leading-6 text-slate-600">{strategy.description}</p>
+          <div className="mt-4 grid gap-3">
+            <SignalStat label="Output type" value={strategy.kind === "ticker" ? "Exchange ticker scan" : "OHLCV signal"} />
+            <SignalStat label="Run button" value={strategy.primaryAction} />
+            <SignalStat label="Current source" value={sourceLabel} />
           </div>
         </Panel>
       </section>
+
+      <AutomatedTradingPanel paperTrading={config?.paper_trading !== false} />
 
       <Panel title="System" icon={Gauge}>
         {system.error ? (
@@ -460,9 +585,115 @@ function Dashboard({
             />
           </div>
         )}
-        <CodeBlock payload={{ health: system.health, config: system.config }} />
+        <PayloadDetails payload={{ health: system.health, config: system.config }} />
       </Panel>
     </div>
+  );
+}
+
+function AutomatedTradingPanel({ paperTrading }: { paperTrading: boolean }) {
+  return (
+    <Panel title="Automated Trading Safety" icon={ShieldCheck}>
+      <div className="grid gap-4 lg:grid-cols-[1.05fr_0.95fr]">
+        <div>
+          <p className="text-sm leading-6 text-slate-600">
+            The app is currently safest as a signal and paper-trading control panel. For full automation,
+            the execution loop should run on a schedule, call the selected strategy, pass every order through
+            the risk manager, then submit only approved orders through `/api/orders`.
+          </p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <SignalStat label="Current mode" value={paperTrading ? "Paper trading" : "Live-capable"} />
+            <SignalStat label="Order gate" value="/api/orders" />
+            <SignalStat label="Secret type" value="Exchange API keys" />
+          </div>
+        </div>
+        <div className="grid gap-3">
+          <ChecklistItem
+            ready={paperTrading}
+            title="Start in paper mode"
+            body="Keep PAPER_TRADING=true until fills, fees, and strategy behavior are proven."
+          />
+          <ChecklistItem
+            ready
+            title="No wallet seed phrases"
+            body="The bot should never store recovery phrases or private keys. Use exchange API keys only."
+          />
+          <ChecklistItem
+            ready
+            title="Disable withdrawals"
+            body="Give bot keys view and trade permissions only; keep withdrawal permission off."
+          />
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function StrategyOutputPanel({
+  strategy,
+  signal,
+  arbitrage,
+}: {
+  strategy: StrategyDefinition;
+  signal?: TradeSignal;
+  arbitrage?: ArbitrageScan;
+}) {
+  if (strategy.kind === "ticker") {
+    return (
+      <Panel
+        title={strategy.outputTitle}
+        icon={strategy.icon}
+        action={
+          <span className="rounded-lg border border-line bg-slate-50 px-3 py-1 text-sm font-black">
+            {arbitrage?.opportunities.length ?? 0}
+          </span>
+        }
+      >
+        <p className="min-h-12 text-sm leading-6 text-slate-600">
+          {signal?.reason ?? strategy.emptyBody}
+        </p>
+        {signal && <SignalSnapshot signal={signal} strategy={strategy} />}
+        <div className="mt-4 grid gap-3">
+          {(arbitrage?.opportunities.length ?? 0) > 0 ? (
+            arbitrage?.opportunities.slice(0, 6).map((opportunity) => (
+              <OpportunityRow key={`${opportunity.buy_exchange}-${opportunity.sell_exchange}`} item={opportunity} />
+            ))
+          ) : (
+            <EmptyState
+              title={arbitrage ? "No qualifying spread yet" : strategy.emptyTitle}
+              body={
+                arbitrage
+                  ? "Configured exchanges were scanned, but no spread cleared the fee and profit buffer."
+                  : strategy.emptyBody
+              }
+            />
+          )}
+        </div>
+        {arbitrage && <PayloadDetails payload={arbitrage} />}
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel
+      title={strategy.outputTitle}
+      icon={strategy.icon}
+      action={<SignalBadge action={signal?.action ?? "hold"} />}
+    >
+      <p className="min-h-12 text-sm leading-6 text-slate-600">
+        {signal?.reason ?? strategy.emptyBody}
+      </p>
+      {signal ? (
+        <>
+          <SignalSnapshot signal={signal} strategy={strategy} />
+          <PayloadDetails payload={signal} />
+        </>
+      ) : (
+        <div className="mt-4">
+          <EmptyState title={strategy.emptyTitle} body={strategy.emptyBody} />
+        </div>
+      )}
+    </Panel>
   );
 }
 
@@ -536,7 +767,7 @@ function SetupHelp({ system }: { system: LoadState }) {
         <GuideCard
           icon={BarChart3}
           title="2. Analyse Markets"
-          body="Use Refresh price for CoinAPI spot rates, Analyse signal for trend or mean-reversion signals, and Scan arbitrage for cross-exchange spreads."
+          body="Use the strategy selector to run trend, mean reversion, arbitrage, GRID, DCA, or market-making checks from one dashboard."
         />
         <GuideCard
           icon={ShieldCheck}
@@ -560,6 +791,26 @@ function SetupHelp({ system }: { system: LoadState }) {
               <p className="mt-2 text-sm leading-6 text-slate-600">{body}</p>
             </div>
           ))}
+        </div>
+      </Panel>
+
+      <Panel title="Wallet and API Safety" icon={ShieldCheck}>
+        <div className="grid gap-4 lg:grid-cols-3">
+          <ChecklistItem
+            ready
+            title="Trading funds"
+            body="Keep only a small trading balance on the exchange account connected to the bot."
+          />
+          <ChecklistItem
+            ready
+            title="Long-term funds"
+            body="Move savings to cold storage or a self-custody wallet you control."
+          />
+          <ChecklistItem
+            ready
+            title="Bot access"
+            body="Use exchange API keys with view/trade permissions, IP restrictions where possible, and no withdrawals."
+          />
         </div>
       </Panel>
     </div>
@@ -602,21 +853,9 @@ function StrategyLab({ system }: { system: LoadState }) {
       />
 
       <section className="grid gap-5 lg:grid-cols-3">
-        <GuideCard
-          icon={Route}
-          title="Arbitrage"
-          body="Compares bid and ask prices across configured CCXT exchanges, then subtracts the configured fee buffer before showing a spread."
-        />
-        <GuideCard
-          icon={TrendingUp}
-          title="Trend Following"
-          body="Checks moving averages, MACD histogram, RSI, and close price alignment before returning buy, sell, or hold."
-        />
-        <GuideCard
-          icon={Activity}
-          title="Mean Reversion"
-          body="Uses Bollinger Bands and RSI to find stretched markets that may revert toward the middle band."
-        />
+        {strategyDefinitions.map((item) => (
+          <GuideCard key={item.id} icon={item.icon} title={item.label} body={item.description} />
+        ))}
       </section>
 
       <section className="grid gap-5 lg:grid-cols-[0.85fr_1.15fr]">
@@ -632,9 +871,10 @@ function StrategyLab({ system }: { system: LoadState }) {
           <div className="grid gap-3">
             {[
               ["GET", "/health", "Server, CoinAPI, trading mode, and indicator backend."],
-              ["GET", "/api/price", "CoinAPI exchange rate for a base and quote asset."],
-              ["POST", "/api/strategies/signal", "Trend-following or mean-reversion decision."],
-              ["GET", "/api/arbitrage/scan", "Cross-exchange arbitrage scan using CCXT tickers."],
+              ["GET", "/api/strategies", "Strategy catalog including ticker and OHLCV bot types."],
+              ["GET", "/api/price", "CoinAPI exchange rate with CCXT fallback."],
+              ["POST", "/api/strategies/signal", "Trend, mean reversion, GRID, DCA, market making, or arbitrage signal."],
+              ["GET", "/api/arbitrage/scan", "Cross-exchange arbitrage opportunities using CCXT tickers."],
               ["POST", "/api/orders", "Paper or live order placement with explicit safety gates."],
             ].map(([method, path, body]) => (
               <div key={path} className="grid gap-2 rounded-lg border border-line bg-slate-50 p-4 sm:grid-cols-[80px_1fr]">
@@ -659,7 +899,7 @@ function PageIntro({
   title,
   body,
 }: {
-  icon: typeof Home;
+  icon: LucideIcon;
   title: string;
   body: string;
 }) {
@@ -685,7 +925,7 @@ function Panel({
   children,
 }: {
   title: string;
-  icon: typeof Home;
+  icon: LucideIcon;
   action?: ReactNode;
   children: ReactNode;
 }) {
@@ -708,7 +948,7 @@ function StatusPill({
   tone,
   children,
 }: {
-  icon: typeof Home;
+  icon: LucideIcon;
   tone: "success" | "warning" | "neutral";
   children: ReactNode;
 }) {
@@ -727,47 +967,58 @@ function StatusPill({
 
 function TextField({
   label,
+  help,
   value,
   onChange,
   className = "",
+  disabled = false,
 }: {
   label: string;
+  help: string;
   value: string;
   onChange: (value: string) => void;
   className?: string;
+  disabled?: boolean;
 }) {
   return (
     <label className={`grid min-w-0 gap-2 ${className}`}>
-      <span className="text-xs font-black uppercase text-slate-500">{label}</span>
+      <FieldLabel label={label} help={help} />
       <input
         value={value}
+        disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
-        className="h-11 w-full min-w-0 rounded-lg border border-line bg-white px-3 text-sm font-semibold outline-none transition focus:border-teal-750 focus:ring-4 focus:ring-teal-700/10"
+        className="h-11 w-full min-w-0 rounded-lg border border-line bg-white px-3 text-sm font-semibold outline-none transition disabled:bg-slate-100 disabled:text-slate-500 focus:border-teal-750 focus:ring-4 focus:ring-teal-700/10"
       />
+      <p className="text-xs leading-5 text-slate-500">{help}</p>
     </label>
   );
 }
 
 function SelectField({
   label,
+  help,
   value,
   options,
   onChange,
   className = "",
+  disabled = false,
 }: {
   label: string;
+  help: string;
   value: string;
   options: Array<{ value: string; label: string }>;
   onChange: (value: string) => void;
   className?: string;
+  disabled?: boolean;
 }) {
   return (
     <label className={`grid min-w-0 gap-2 ${className}`}>
-      <span className="text-xs font-black uppercase text-slate-500">{label}</span>
+      <FieldLabel label={label} help={help} />
       <select
         value={value}
+        disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
-        className="h-11 w-full min-w-0 rounded-lg border border-line bg-white px-3 text-sm font-semibold outline-none transition focus:border-teal-750 focus:ring-4 focus:ring-teal-700/10"
+        className="h-11 w-full min-w-0 rounded-lg border border-line bg-white px-3 text-sm font-semibold outline-none transition disabled:bg-slate-100 disabled:text-slate-500 focus:border-teal-750 focus:ring-4 focus:ring-teal-700/10"
       >
         {options.map((option) => (
           <option key={option.value} value={option.value}>
@@ -775,7 +1026,20 @@ function SelectField({
           </option>
         ))}
       </select>
+      <p className="text-xs leading-5 text-slate-500">{help}</p>
     </label>
+  );
+}
+
+function FieldLabel({ label, help }: { label: string; help: string }) {
+  return (
+    <span className="flex items-center gap-1.5 text-xs font-black uppercase text-slate-500">
+      {label}
+      <span title={help}>
+        <Info className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+      </span>
+      <span className="sr-only">{help}</span>
+    </span>
   );
 }
 
@@ -786,16 +1050,15 @@ function ActionButton({
   tone = "teal",
   onClick,
 }: {
-  icon: typeof Home;
+  icon: LucideIcon;
   label: string;
   loading: boolean;
-  tone?: "teal" | "slate" | "amber" | "light";
+  tone?: "teal" | "slate" | "light";
   onClick: () => void;
 }) {
   const classes = {
     teal: "bg-teal-750 text-white hover:bg-teal-800",
     slate: "bg-slate-800 text-white hover:bg-slate-900",
-    amber: "bg-amber-650 text-white hover:bg-amber-700",
     light: "border border-line bg-white text-slate-800 hover:bg-slate-50",
   }[tone];
   return (
@@ -815,8 +1078,8 @@ function Metric({ label, value, caption }: { label: string; value: string; capti
   return (
     <article className="rounded-lg border border-line bg-panel p-4 shadow-panel">
       <p className="text-xs font-black uppercase text-slate-500">{label}</p>
-      <strong className="mt-3 block min-h-10 break-words text-3xl font-black tracking-normal">{value}</strong>
-      <span className="mt-1 block text-sm text-slate-500">{caption}</span>
+      <strong className="mt-3 block min-h-10 break-words text-2xl font-black tracking-normal">{value}</strong>
+      <span className="mt-1 block break-words text-sm text-slate-500">{caption}</span>
     </article>
   );
 }
@@ -829,6 +1092,16 @@ function SignalBadge({ action }: { action: TradeSignal["action"] }) {
     arbitrage: "bg-amber-100 text-amber-800",
   }[action];
   return <span className={`rounded-lg px-3 py-1 text-sm font-black uppercase ${classes}`}>{action}</span>;
+}
+
+function SignalSnapshot({ signal, strategy }: { signal: TradeSignal; strategy: StrategyDefinition }) {
+  return (
+    <div className="mt-4 grid gap-3 sm:grid-cols-3">
+      <SignalStat label="Strategy" value={strategy.label} />
+      <SignalStat label="Confidence" value={`${Math.round(signal.confidence * 100)}%`} />
+      <SignalStat label="Symbol" value={signal.symbol} />
+    </div>
+  );
 }
 
 function SignalStat({ label, value }: { label: string; value: string }) {
@@ -889,7 +1162,7 @@ function GuideCard({
   title,
   body,
 }: {
-  icon: typeof Home;
+  icon: LucideIcon;
   title: string;
   body: string;
 }) {
@@ -925,9 +1198,20 @@ function Alert({
   );
 }
 
+function PayloadDetails({ payload }: { payload: unknown }) {
+  return (
+    <details className="mt-4 rounded-lg border border-line bg-slate-50">
+      <summary className="cursor-pointer px-4 py-3 text-sm font-black text-slate-700">
+        API response
+      </summary>
+      <CodeBlock payload={payload} />
+    </details>
+  );
+}
+
 function CodeBlock({ payload }: { payload: unknown }) {
   return (
-    <pre className="mt-4 max-h-80 overflow-auto rounded-lg border border-slate-800 bg-[#0d1c18] p-4 text-xs leading-6 text-emerald-100">
+    <pre className="max-h-80 overflow-auto border-t border-slate-800 bg-[#0d1c18] p-4 text-xs leading-6 text-emerald-100">
       {JSON.stringify(payload, null, 2)}
     </pre>
   );
@@ -943,4 +1227,16 @@ function priceCaption(price: PriceResponse) {
     return `${price.exchange ?? "exchange"} ${price.symbol ?? ""}`.trim();
   }
   return `${price.asset_id_base}/${price.asset_id_quote}`;
+}
+
+function strategyDefinition(id: StrategyId) {
+  return strategyDefinitions.find((item) => item.id === id) ?? strategyDefinitions[0];
+}
+
+function initialTheme(): Theme {
+  const saved = window.localStorage.getItem("trading-bot-theme");
+  if (saved === "dark" || saved === "light") {
+    return saved;
+  }
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
