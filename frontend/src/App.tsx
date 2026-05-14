@@ -23,6 +23,7 @@ import {
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import {
   getConfig,
+  getExchangeTickers,
   getHealth,
   getOrderHistory,
   getPrice,
@@ -39,6 +40,7 @@ import type {
   PriceResponse,
   PublicConfig,
   StrategyId,
+  Ticker,
   TradeSignal,
 } from "./types";
 
@@ -824,6 +826,7 @@ function SetupHelp({ system, setPage }: { system: LoadState; setPage: (page: Pag
             ["PAPER_TRADING", "Keep true while developing and testing."],
             ["ENABLE_LIVE_TRADING", "Must be true before the live order path can run."],
             ["MAX_ORDER_USD", "Hard notional cap checked before order placement."],
+            ["ORDER_DATABASE_PATH", "Local SQL database file used for order event history."],
           ].map(([name, body]) => (
             <div key={name} className="rounded-lg border border-line bg-slate-50 p-4">
               <code className="text-sm font-black text-teal-900">{name}</code>
@@ -921,7 +924,7 @@ function AutoTraderGuide({ setPage }: { setPage: (page: Page) => void }) {
           <ChecklistItem
             ready
             title="Persist decisions"
-            body="Move order history from in-memory storage to SQLite/PostgreSQL before production."
+            body="Use the SQL audit trail locally, then move long-term order events into SQL Server/T-SQL."
           />
           <ChecklistItem
             ready
@@ -1302,14 +1305,52 @@ function OrderHistoryRow({ item }: { item: OrderHistoryEntry }) {
 }
 
 function StrategyLab({ system }: { system: LoadState }) {
+  const [marketForm, setMarketForm] = useState({
+    symbol: "BTC/USDT",
+    exchangeIds: "binance,kraken,kucoin",
+  });
+  const [tickers, setTickers] = useState<Ticker[]>([]);
+  const [history, setHistory] = useState<OrderHistoryEntry[]>([]);
+  const [busyAction, setBusyAction] = useState<"market" | "history" | undefined>();
+  const [notice, setNotice] = useState<Notice | undefined>();
+  const [marketUpdatedAt, setMarketUpdatedAt] = useState<string | undefined>();
+
+  useEffect(() => {
+    setMarketForm((previous) => ({
+      ...previous,
+      symbol: system.config?.default_symbol || previous.symbol,
+      exchangeIds: system.config?.exchange_ids.length
+        ? system.config.exchange_ids.join(",")
+        : previous.exchangeIds,
+    }));
+  }, [system.config]);
+
+  useEffect(() => {
+    void loadOrderHistory();
+  }, []);
+
+  const maxOrder = Number(system.config?.max_order_usd ?? 0);
+  const maxDailyLoss = Number(system.config?.max_daily_loss_usd ?? 0);
+  const recordedNotional = history.reduce(
+    (sum, item) => sum + item.amount * Number(item.reference_price ?? item.price ?? 0),
+    0,
+  );
+  const rejectedOrders = history.filter((item) => ["rejected", "failed"].includes(item.status)).length;
+  const paperOrders = history.filter((item) => item.paper_trading).length;
+  const bestBid = bestTicker(tickers, "bid", "max");
+  const bestAsk = bestTicker(tickers, "ask", "min");
+  const marketSpread =
+    bestBid?.bid && bestAsk?.ask ? ((bestBid.bid - bestAsk.ask) / bestAsk.ask) * 100 : undefined;
   const readiness = useMemo(
     () => [
       {
         title: "Market data",
-        ready: Boolean(system.health?.coinapi_configured),
+        ready: Boolean(system.health?.coinapi_configured || tickers.length),
         body: system.health?.coinapi_configured
           ? "CoinAPI is configured for OHLCV and spot rates."
-          : "Add COINAPI_KEY before relying on CoinAPI analysis.",
+          : tickers.length
+            ? "Exchange market data is available through CCXT."
+            : "Add COINAPI_KEY or refresh exchange tickers.",
       },
       {
         title: "Paper mode",
@@ -1320,25 +1361,140 @@ function StrategyLab({ system }: { system: LoadState }) {
             : "Orders are simulated unless live flags are deliberately enabled.",
       },
       {
-        title: "Risk limit",
-        ready: Boolean(system.config?.max_order_usd),
-        body: `Max order notional: $${system.config?.max_order_usd ?? "-"}`,
+        title: "SQL audit trail",
+        ready: Boolean(system.config?.order_database_path),
+        body: system.config?.order_database_path
+          ? `Order events persist to ${system.config.order_database_path}.`
+          : "Configure ORDER_DATABASE_PATH before relying on history.",
       },
     ],
-    [system],
+    [history.length, system, tickers.length],
   );
+
+  async function loadMarketOverview() {
+    setBusyAction("market");
+    setNotice(undefined);
+    try {
+      const result = await getExchangeTickers(marketForm.symbol, marketForm.exchangeIds);
+      setTickers(result);
+      setMarketUpdatedAt(new Date().toLocaleTimeString());
+    } catch (error) {
+      setNotice({
+        title: "Market data unavailable",
+        body: error instanceof Error ? error.message : "Unable to load exchange tickers.",
+        tone: "warning",
+      });
+    } finally {
+      setBusyAction(undefined);
+    }
+  }
+
+  async function loadOrderHistory() {
+    setBusyAction((current) => current ?? "history");
+    try {
+      const result = await getOrderHistory();
+      setHistory(result.orders);
+    } catch (error) {
+      setNotice({
+        title: "Order history unavailable",
+        body: error instanceof Error ? error.message : "Unable to load order history.",
+        tone: "warning",
+      });
+    } finally {
+      setBusyAction((current) => (current === "history" ? undefined : current));
+    }
+  }
 
   return (
     <div className="grid gap-5">
       <PageIntro
         icon={BarChart3}
         title="Strategy Lab"
-        body="Use this page as the operating map for strategies, risk checks, and the API routes behind the dashboard."
+        body="Live market context, strategy fit, risk budget, and API visibility before a signal becomes an order."
       />
+
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <Metric label="Exchanges Online" value={`${tickers.length}`} caption={marketForm.exchangeIds} />
+        <Metric
+          label="Best Bid"
+          value={bestBid?.bid ? formatNumber(bestBid.bid, 8) : "-"}
+          caption={bestBid?.exchange ?? "Refresh market"}
+        />
+        <Metric
+          label="Best Ask"
+          value={bestAsk?.ask ? formatNumber(bestAsk.ask, 8) : "-"}
+          caption={bestAsk?.exchange ?? "Refresh market"}
+        />
+        <Metric
+          label="Spread"
+          value={typeof marketSpread === "number" ? formatPercent(marketSpread) : "-"}
+          caption={marketUpdatedAt ? `Updated ${marketUpdatedAt}` : "Cross-exchange view"}
+        />
+      </section>
+
+      <section className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
+        <Panel
+          title="Market Board"
+          icon={Activity}
+          action={
+            <ActionButton
+              icon={RefreshCw}
+              label="Refresh market"
+              loading={busyAction === "market"}
+              tone="light"
+              onClick={() => void loadMarketOverview()}
+            />
+          }
+        >
+          <div className="grid gap-4 lg:grid-cols-[1fr_1.2fr]">
+            <div className="grid content-start gap-4">
+              <TextField
+                label="Symbol"
+                help="CCXT trading pair."
+                value={marketForm.symbol}
+                onChange={(value) => setMarketForm((previous) => ({ ...previous, symbol: value }))}
+              />
+              <TextField
+                label="Exchanges"
+                help="Comma-separated CCXT exchange ids."
+                value={marketForm.exchangeIds}
+                onChange={(value) => setMarketForm((previous) => ({ ...previous, exchangeIds: value }))}
+              />
+              {notice && <Alert tone={notice.tone} title={notice.title} body={notice.body} />}
+            </div>
+            <MarketTickerTable tickers={tickers} />
+          </div>
+        </Panel>
+
+        <Panel
+          title="Risk Budget"
+          icon={ShieldCheck}
+          action={
+            <ActionButton
+              icon={RefreshCw}
+              label="Reload history"
+              loading={busyAction === "history"}
+              tone="light"
+              onClick={() => void loadOrderHistory()}
+            />
+          }
+        >
+          <RiskBudgetChart
+            maxOrder={maxOrder}
+            maxDailyLoss={maxDailyLoss}
+            recordedNotional={recordedNotional}
+          />
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <SignalStat label="Events" value={`${history.length}`} />
+            <SignalStat label="Paper" value={`${paperOrders}`} />
+            <SignalStat label="Rejected" value={`${rejectedOrders}`} />
+          </div>
+        </Panel>
+      </section>
 
       <section className="grid gap-5 lg:grid-cols-3">
         {strategyDefinitions.map((item) => (
-          <GuideCard key={item.id} icon={item.icon} title={item.label} body={item.description} />
+          <StrategyCapabilityCard key={item.id} strategy={item} />
         ))}
       </section>
 
@@ -1355,11 +1511,12 @@ function StrategyLab({ system }: { system: LoadState }) {
           <div className="grid gap-3">
             {[
               ["GET", "/health", "Server, CoinAPI, trading mode, and indicator backend."],
-              ["GET", "/api/strategies", "Strategy catalog including ticker and OHLCV bot types."],
-              ["GET", "/api/price", "CoinAPI exchange rate with CCXT fallback."],
+              ["GET", "/api/config", "Public runtime configuration and SQL audit path."],
+              ["GET", "/api/exchanges/tickers", "Current exchange bid, ask, last, and timestamps."],
               ["POST", "/api/strategies/signal", "Trend, mean reversion, GRID, DCA, market making, or arbitrage signal."],
               ["GET", "/api/arbitrage/scan", "Cross-exchange arbitrage opportunities using CCXT tickers."],
               ["POST", "/api/orders", "Paper or live order placement with explicit safety gates."],
+              ["GET", "/api/orders/history", "SQL-backed order event history."],
             ].map(([method, path, body]) => (
               <div key={path} className="grid gap-2 rounded-lg border border-line bg-slate-50 p-4 sm:grid-cols-[80px_1fr]">
                 <span className="rounded-md bg-teal-950 px-2 py-1 text-center text-xs font-black text-white">
@@ -1375,6 +1532,113 @@ function StrategyLab({ system }: { system: LoadState }) {
         </Panel>
       </section>
     </div>
+  );
+}
+
+function MarketTickerTable({ tickers }: { tickers: Ticker[] }) {
+  if (!tickers.length) {
+    return (
+      <EmptyState
+        title="No market snapshot yet"
+        body="Refresh the market board to compare configured exchanges."
+      />
+    );
+  }
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-line">
+      <div className="grid grid-cols-[1fr_1fr_1fr_1fr] bg-slate-50 px-3 py-2 text-xs font-black uppercase text-slate-500">
+        <span>Exchange</span>
+        <span>Bid</span>
+        <span>Ask</span>
+        <span>Last</span>
+      </div>
+      <div className="divide-y divide-line">
+        {tickers.map((ticker) => (
+          <div
+            key={`${ticker.exchange}-${ticker.symbol}`}
+            className="grid grid-cols-[1fr_1fr_1fr_1fr] gap-2 px-3 py-3 text-sm"
+          >
+            <strong className="min-w-0 break-words font-black">{ticker.exchange}</strong>
+            <span>{ticker.bid ? formatNumber(ticker.bid, 8) : "-"}</span>
+            <span>{ticker.ask ? formatNumber(ticker.ask, 8) : "-"}</span>
+            <span>{ticker.last ? formatNumber(ticker.last, 8) : "-"}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RiskBudgetChart({
+  maxOrder,
+  maxDailyLoss,
+  recordedNotional,
+}: {
+  maxOrder: number;
+  maxDailyLoss: number;
+  recordedNotional: number;
+}) {
+  const rows = [
+    {
+      label: "Single order cap",
+      value: maxOrder,
+      max: Math.max(maxDailyLoss, maxOrder),
+      caption: `$${maxOrder.toFixed(2)} max order`,
+    },
+    {
+      label: "Daily loss guard",
+      value: maxDailyLoss,
+      max: Math.max(maxDailyLoss, maxOrder),
+      caption: `$${maxDailyLoss.toFixed(2)} daily guard`,
+    },
+    {
+      label: "Recorded notional",
+      value: recordedNotional,
+      max: Math.max(maxDailyLoss, recordedNotional, 1),
+      caption: `$${recordedNotional.toFixed(2)} in recent events`,
+    },
+  ];
+
+  return (
+    <div className="grid gap-4">
+      {rows.map((row) => (
+        <div key={row.label}>
+          <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+            <span className="font-black">{row.label}</span>
+            <span className="text-slate-500">{row.caption}</span>
+          </div>
+          <div className="h-3 overflow-hidden rounded-full bg-slate-100">
+            <div
+              className="h-full rounded-full bg-teal-750"
+              style={{ width: barWidth(row.value, row.max) }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StrategyCapabilityCard({ strategy }: { strategy: StrategyDefinition }) {
+  const Icon = strategy.icon;
+  return (
+    <article className="rounded-lg border border-line bg-panel p-5 shadow-panel">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="grid h-11 w-11 place-items-center rounded-lg bg-teal-950 text-white">
+          <Icon className="h-5 w-5" />
+        </div>
+        <span className="rounded-lg bg-slate-50 px-3 py-1 text-xs font-black uppercase text-slate-600">
+          {strategy.kind === "ticker" ? "Ticker" : "OHLCV"}
+        </span>
+      </div>
+      <h3 className="text-lg font-black tracking-normal">{strategy.label}</h3>
+      <p className="mt-2 min-h-16 text-sm leading-6 text-slate-600">{strategy.description}</p>
+      <div className="mt-4 grid gap-3">
+        <SignalStat label="Primary Action" value={strategy.primaryAction} />
+        <SignalStat label="Output" value={strategy.outputTitle} />
+      </div>
+    </article>
   );
 }
 
@@ -1713,6 +1977,21 @@ function priceCaption(price: PriceResponse) {
     return `${price.exchange ?? "exchange"} ${price.symbol ?? ""}`.trim();
   }
   return `${price.asset_id_base}/${price.asset_id_quote}`;
+}
+
+function bestTicker(tickers: Ticker[], field: "bid" | "ask", mode: "min" | "max") {
+  const values = tickers.filter((ticker) => typeof ticker[field] === "number");
+  if (!values.length) return undefined;
+  return values.reduce((best, ticker) => {
+    const next = ticker[field] ?? 0;
+    const current = best[field] ?? 0;
+    return mode === "max" ? (next > current ? ticker : best) : next < current ? ticker : best;
+  });
+}
+
+function barWidth(value: number, max: number) {
+  if (!Number.isFinite(value) || !Number.isFinite(max) || max <= 0) return "0%";
+  return `${Math.min(100, Math.max(0, (value / max) * 100)).toFixed(1)}%`;
 }
 
 function strategyDefinition(id: StrategyId) {

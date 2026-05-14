@@ -20,6 +20,7 @@ export type PublicConfig = {
   max_daily_loss_usd: string;
   min_arbitrage_profit_pct: string;
   fee_buffer_pct: string;
+  order_database_path: string;
 };
 
 export type TradeAction = "buy" | "sell" | "hold" | "arbitrage";

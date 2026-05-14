@@ -17,6 +17,7 @@ from app.schemas import OrderRequest, StrategySignalRequest
 from app.services.coinapi import CoinApiClient, CoinApiError
 from app.services.exchange import ExchangeError, ExchangeGateway
 from app.services.indicators import HAS_TALIB, IndicatorEngine
+from app.services.order_store import OrderEventStore
 from app.services.risk import RiskError, RiskManager
 from app.strategies import (
     ArbitrageStrategy,
@@ -40,7 +41,6 @@ app = FastAPI(
     ),
 )
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-ORDER_HISTORY: list[dict[str, Any]] = []
 
 
 def _json(data: Any) -> Any:
@@ -67,6 +67,10 @@ def exchange_gateway(settings: Settings = Depends(get_settings)) -> ExchangeGate
 
 def indicator_engine() -> IndicatorEngine:
     return IndicatorEngine()
+
+
+def order_event_store(settings: Settings = Depends(get_settings)) -> OrderEventStore:
+    return OrderEventStore(settings.order_database_path)
 
 
 @app.get("/", include_in_schema=False)
@@ -372,6 +376,7 @@ async def order(
     request: OrderRequest,
     settings: Settings = Depends(get_settings),
     gateway: ExchangeGateway = Depends(exchange_gateway),
+    store: OrderEventStore = Depends(order_event_store),
 ) -> Any:
     risk = RiskManager(settings)
     try:
@@ -385,28 +390,31 @@ async def order(
             price=request.price,
             confirm_live_trading=request.confirm_live_trading,
         )
-        event = _record_order_event(request, result, settings)
+        event = _record_order_event(request, result, settings, store)
         return {**_json(result), "history_event": event}
     except RiskError as exc:
-        _record_order_event(request, {"status": "rejected", "message": str(exc)}, settings)
+        _record_order_event(request, {"status": "rejected", "message": str(exc)}, settings, store)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ExchangeError as exc:
-        _record_order_event(request, {"status": "failed", "message": str(exc)}, settings)
+        _record_order_event(request, {"status": "failed", "message": str(exc)}, settings, store)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/api/orders/history")
-async def order_history(limit: int = Query(default=25, ge=1, le=100)) -> Any:
-    return {"orders": list(reversed(ORDER_HISTORY[-limit:]))}
+async def order_history(
+    limit: int = Query(default=25, ge=1, le=100),
+    store: OrderEventStore = Depends(order_event_store),
+) -> Any:
+    return {"orders": store.list_recent(limit)}
 
 
 def _record_order_event(
     request: OrderRequest,
     result: dict[str, Any],
     settings: Settings,
+    store: OrderEventStore,
 ) -> dict[str, Any]:
     event = {
-        "id": len(ORDER_HISTORY) + 1,
         "created_at": datetime.now(UTC),
         "status": result.get("status", "submitted"),
         "exchange_id": request.exchange_id,
@@ -421,9 +429,7 @@ def _record_order_event(
         "confirm_live_trading": request.confirm_live_trading,
         "result": result,
     }
-    payload = _json(event)
-    ORDER_HISTORY.append(payload)
-    return payload
+    return store.add(_json(event))
 
 
 async def _load_candles(

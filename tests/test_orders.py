@@ -1,17 +1,23 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from fastapi.testclient import TestClient
 
-from app.main import ORDER_HISTORY, app
+from app.main import app, order_event_store
+from app.services.order_store import OrderEventStore
 
 
 class OrderEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
-        ORDER_HISTORY.clear()
+        self.temp_dir = TemporaryDirectory()
+        self.store = OrderEventStore(Path(self.temp_dir.name) / "orders.sqlite3")
+        app.dependency_overrides[order_event_store] = lambda: self.store
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
-        ORDER_HISTORY.clear()
+        app.dependency_overrides.clear()
+        self.temp_dir.cleanup()
 
     def test_paper_order_is_recorded_in_history(self) -> None:
         response = self.client.post(

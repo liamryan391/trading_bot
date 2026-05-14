@@ -15,12 +15,13 @@ This is not financial advice. The bot is built to start in paper mode so you can
 
 - Dashboard at `/` for price checks, strategy signals, arbitrage scans, and system status.
 - Setup Help page at `/setup-help` with install, environment, and usage guidance.
-- Strategy Lab page at `/strategy-lab` for strategy behavior, readiness checks, and API route mapping.
+- Strategy Lab page at `/strategy-lab` for live market snapshots, strategy behavior, risk budget charts, readiness checks, and API route mapping.
 - CoinAPI exchange rates and OHLCV market data.
 - CCXT exchange ticker, OHLCV, balance, and order gateway.
 - TA-Lib indicators when installed, with a pandas fallback if TA-Lib is not available.
 - Strategies for arbitrage, trend following, mean reversion, GRID trading, DCA, and market making.
 - Paper-trading default, live-trading opt-in, sandbox mode, and max order notional checks.
+- SQL-backed order event history for paper/live audit trails.
 
 ## Requirements
 
@@ -80,6 +81,8 @@ MAX_ORDER_USD=25
 MAX_DAILY_LOSS_USD=100
 MIN_ARBITRAGE_PROFIT_PCT=0.35
 FEE_BUFFER_PCT=0.10
+
+ORDER_DATABASE_PATH=data/trading_bot.sqlite3
 ```
 
 Optional CCXT credentials:
@@ -173,6 +176,21 @@ Market making bot:
 - Uses ATR or a minimum spread to avoid quoting too tightly.
 - Still requires inventory limits, order-book depth checks, and live exchange permissions before production use.
 
+## SQL Storage
+
+The app now records order events into a local SQL database file at `ORDER_DATABASE_PATH`.
+The default is `data/trading_bot.sqlite3`, which keeps local development simple and requires no extra driver.
+
+For your Windows/local SQL setup, the recommended production target is **SQL Server with T-SQL** rather than MySQL. That fits better if you already use Microsoft SQL tooling locally, gives strong audit-table support, and is a good match for a trading execution log.
+
+A starter SQL Server schema is included at:
+
+```text
+sql/sqlserver_order_events.sql
+```
+
+Use the local SQLite file while developing the bot flow. Move the `order_events` table to SQL Server/T-SQL once you are ready to keep a longer-term audit trail and connect the backend to your SQL Server instance.
+
 ## Order Safety
 
 Live order placement is blocked unless all of these are true:
@@ -196,6 +214,7 @@ Start with exchange sandbox keys where possible. Keep early orders tiny, inspect
 - `GET /api/arbitrage/scan?symbol=BTC/USDT&exchange_ids=binance,kraken,kucoin`
 - `GET /api/balance/{exchange_id}`
 - `POST /api/orders`
+- `GET /api/orders/history`
 
 Example strategy request:
 

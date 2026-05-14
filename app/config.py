@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from pydantic import Field, SecretStr
@@ -29,6 +30,7 @@ class Settings(BaseSettings):
     max_daily_loss_usd: Decimal = Decimal("100")
     min_arbitrage_profit_pct: Decimal = Decimal("0.35")
     fee_buffer_pct: Decimal = Decimal("0.10")
+    order_database_path: Path = Path("data/trading_bot.sqlite3")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -72,6 +74,7 @@ class Settings(BaseSettings):
             "max_daily_loss_usd": str(self.max_daily_loss_usd),
             "min_arbitrage_profit_pct": str(self.min_arbitrage_profit_pct),
             "fee_buffer_pct": str(self.fee_buffer_pct),
+            "order_database_path": str(self.order_database_path),
         }
 
 

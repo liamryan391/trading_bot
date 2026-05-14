@@ -6,6 +6,7 @@ import type {
   PriceResponse,
   PublicConfig,
   StrategySignalRequest,
+  Ticker,
   TradeSignal,
 } from "../types";
 
@@ -74,6 +75,14 @@ export function scanArbitrage(symbol: string, exchangeIds: string) {
     params.set("exchange_ids", exchangeIds);
   }
   return request<ArbitrageScan>(`/api/arbitrage/scan?${params.toString()}`);
+}
+
+export function getExchangeTickers(symbol: string, exchangeIds: string) {
+  const params = new URLSearchParams({ symbol });
+  if (exchangeIds.trim()) {
+    params.set("exchange_ids", exchangeIds);
+  }
+  return request<Ticker[]>(`/api/exchanges/tickers?${params.toString()}`);
 }
 
 export function getStrategySignal(body: StrategySignalRequest) {
