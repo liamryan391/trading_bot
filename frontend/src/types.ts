@@ -3,6 +3,7 @@ export type Health = {
   environment: string;
   paper_trading: boolean;
   coinapi_configured: boolean;
+  demo_market_data_enabled: boolean;
   talib_backend: string;
 };
 
@@ -13,6 +14,7 @@ export type PublicConfig = {
   exchange_ids: string[];
   default_symbol: string;
   default_coinapi_symbol_id: string;
+  demo_market_data_enabled: boolean;
   paper_trading: boolean;
   enable_live_trading: boolean;
   sandbox_mode: boolean;
@@ -45,6 +47,8 @@ export type Ticker = {
   ask: number | null;
   last: number | null;
   timestamp?: string | null;
+  source?: "ccxt" | "demo";
+  warning?: string;
 };
 
 export type ArbitrageOpportunity = {
@@ -62,6 +66,8 @@ export type ArbitrageScan = {
   signal: TradeSignal;
   opportunities: ArbitrageOpportunity[];
   tickers: Ticker[];
+  source?: "exchange" | "demo";
+  warning?: string;
 };
 
 export type StrategyId =
@@ -89,7 +95,7 @@ export type PriceResponse = {
   asset_id_quote: string;
   rate: number;
   time?: string;
-  source?: "coinapi" | "ccxt";
+  source?: "coinapi" | "ccxt" | "demo";
   exchange?: string;
   symbol?: string;
   warning?: string;

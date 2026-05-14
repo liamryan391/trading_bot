@@ -72,6 +72,7 @@ COINAPI_BASE_URL=https://rest.coinapi.io
 EXCHANGE_IDS=binance,kraken,kucoin
 DEFAULT_SYMBOL=BTC/USDT
 DEFAULT_COINAPI_SYMBOL_ID=BINANCE_SPOT_BTC_USDT
+DEMO_MARKET_DATA_ENABLED=true
 
 PAPER_TRADING=true
 ENABLE_LIVE_TRADING=false
@@ -88,6 +89,8 @@ FEE_BUFFER_PCT=0.10
 DATABASE_URL=
 ORDER_DATABASE_PATH=data/trading_bot.sqlite3
 ```
+
+`DEMO_MARKET_DATA_ENABLED=true` keeps the dashboard usable when your machine cannot reach CoinAPI or public exchange APIs. Demo data is deterministic and labelled in the UI; use it for local testing only, not for live trading decisions.
 
 Optional CCXT credentials:
 
@@ -331,6 +334,8 @@ CCXT errors:
 
 - Confirm the exchange id exists in CCXT.
 - Confirm the symbol is valid for that exchange.
+- Confirm the machine running Uvicorn can reach public exchange APIs such as Binance, Kraken, and KuCoin.
+- If local networking, firewall, DNS, VPN, or regional exchange blocking prevents CCXT calls, keep `DEMO_MARKET_DATA_ENABLED=true` for UI testing.
 - Some exchanges do not support sandbox mode for every market.
 
 TA-Lib:

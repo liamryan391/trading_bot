@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     exchange_api_keys_json: str = "{}"
     default_symbol: str = "BTC/USDT"
     default_coinapi_symbol_id: str = "BINANCE_SPOT_BTC_USDT"
+    demo_market_data_enabled: bool = True
 
     paper_trading: bool = True
     enable_live_trading: bool = False
@@ -71,6 +72,7 @@ class Settings(BaseSettings):
             "exchange_ids": self.exchange_id_list,
             "default_symbol": self.default_symbol,
             "default_coinapi_symbol_id": self.default_coinapi_symbol_id,
+            "demo_market_data_enabled": self.demo_market_data_enabled,
             "paper_trading": self.paper_trading,
             "enable_live_trading": self.enable_live_trading,
             "sandbox_mode": self.sandbox_mode,

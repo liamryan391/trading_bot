@@ -384,8 +384,8 @@ function Dashboard({
         setPrice(result);
         if (result.warning) {
           setNotice({
-            title: "CoinAPI fallback active",
-            body: `${result.warning} Showing fallback price from ${result.exchange} ${result.symbol}.`,
+            title: result.source === "demo" ? "Demo market data active" : "CoinAPI fallback active",
+            body: `${result.warning} Showing ${result.source || "fallback"} price from ${result.exchange} ${result.symbol}.`,
             tone: "warning",
           });
         }
@@ -395,6 +395,13 @@ function Dashboard({
           const result = await scanArbitrage(form.symbol, form.exchanges);
           setArbitrage(result);
           setSignal(result.signal);
+          if (result.warning) {
+            setNotice({
+              title: "Demo market data active",
+              body: `${result.warning} Arbitrage output is for UI and strategy testing only.`,
+              tone: "warning",
+            });
+          }
           return;
         }
 
@@ -414,7 +421,7 @@ function Dashboard({
         const dataSource = metadataString(result.metadata, "data_source");
         if (warning) {
           setNotice({
-            title: "CoinAPI fallback active",
+            title: dataSource === "demo" ? "Demo market data active" : "CoinAPI fallback active",
             body: `${warning} Signal generated from ${dataSource || "exchange"} candles.`,
             tone: "warning",
           });
@@ -592,11 +599,16 @@ function Dashboard({
         {system.error ? (
           <Alert tone="danger" title="API status failed" body={system.error} />
         ) : (
-          <div className="grid gap-4 lg:grid-cols-3">
+          <div className="grid gap-4 lg:grid-cols-4">
             <ChecklistItem
               ready={Boolean(system.health?.coinapi_configured)}
               title="CoinAPI key"
               body={system.health?.coinapi_configured ? "Configured" : "Missing in .env"}
+            />
+            <ChecklistItem
+              ready={Boolean(system.health?.demo_market_data_enabled)}
+              title="Demo fallback"
+              body={system.health?.demo_market_data_enabled ? "Available for local testing" : "Disabled"}
             />
             <ChecklistItem
               ready={config?.paper_trading !== false}
@@ -879,6 +891,15 @@ function SetupHelp({ system, setPage }: { system: LoadState; setPage: (page: Pag
               body={system.health?.coinapi_configured ? "Ready for market data" : "Add COINAPI_KEY to .env"}
             />
             <ChecklistItem
+              ready={Boolean(system.health?.demo_market_data_enabled)}
+              title="Demo market data"
+              body={
+                system.health?.demo_market_data_enabled
+                  ? "Fallback data is available for local testing"
+                  : "Disabled; live providers must respond"
+              }
+            />
+            <ChecklistItem
               ready={system.config?.paper_trading !== false}
               title="Execution safety"
               body={system.config?.paper_trading === false ? "Live mode configured" : "Paper mode active"}
@@ -1034,6 +1055,7 @@ function SetupHelp({ system, setPage }: { system: LoadState; setPage: (page: Pag
         <div className="grid gap-3 md:grid-cols-2">
           {[
             ["COINAPI_KEY", "Required for CoinAPI price and OHLCV endpoints."],
+            ["DEMO_MARKET_DATA_ENABLED", "Fallback demo candles and tickers when live providers are unavailable."],
             ["EXCHANGE_IDS", "Comma-separated CCXT exchange ids used by arbitrage scanning."],
             ["EXCHANGE_API_KEYS_JSON", "Optional credentials for balances or real orders."],
             ["PAPER_TRADING", "Keep true while developing and testing."],
@@ -1268,6 +1290,15 @@ function ExecutionControl({
         limit: 100,
       });
       setLastSignal(result);
+      const warning = metadataString(result.metadata, "warning");
+      const dataSource = metadataString(result.metadata, "data_source");
+      if (warning) {
+        setNotice({
+          title: dataSource === "demo" ? "Demo market data active" : "Market data fallback active",
+          body: `${warning} Proposed orders should stay in paper mode until live data is connected.`,
+          tone: "warning",
+        });
+      }
     } catch (error) {
       setNotice({
         title: "Signal failed",
@@ -1561,15 +1592,17 @@ function StrategyLab({ system }: { system: LoadState }) {
     bestBid?.bid && bestAsk?.ask ? ((bestBid.bid - bestAsk.ask) / bestAsk.ask) * 100 : undefined;
   const readiness = useMemo(
     () => [
-      {
-        title: "Market data",
-        ready: Boolean(system.health?.coinapi_configured || tickers.length),
-        body: system.health?.coinapi_configured
-          ? "CoinAPI is configured for OHLCV and spot rates."
-          : tickers.length
-            ? "Exchange market data is available through CCXT."
+    {
+      title: "Market data",
+      ready: Boolean(system.health?.coinapi_configured || tickers.length || system.health?.demo_market_data_enabled),
+      body: system.health?.coinapi_configured
+        ? "CoinAPI is configured for OHLCV and spot rates."
+        : tickers.length
+          ? "Exchange market data is available through CCXT."
+          : system.health?.demo_market_data_enabled
+            ? "Demo market data is available until CoinAPI or exchange APIs are connected."
             : "Add COINAPI_KEY or refresh exchange tickers.",
-      },
+    },
       {
         title: "Paper mode",
         ready: system.config?.paper_trading !== false,
@@ -2280,7 +2313,7 @@ function metadataString(metadata: Record<string, unknown> | undefined, key: stri
 }
 
 function priceCaption(price: PriceResponse) {
-  if (price.source === "ccxt") {
+  if (price.source === "ccxt" || price.source === "demo") {
     return `${price.exchange ?? "exchange"} ${price.symbol ?? ""}`.trim();
   }
   return `${price.asset_id_base}/${price.asset_id_quote}`;

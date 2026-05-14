@@ -15,6 +15,7 @@ from app.config import Settings, get_settings
 from app.domain import Candle
 from app.schemas import OrderRequest, SandboxSmokeTestRequest, StrategySignalRequest
 from app.services.coinapi import CoinApiClient, CoinApiError
+from app.services.demo_market import demo_candles, demo_tickers
 from app.services.exchange import ExchangeError, ExchangeGateway
 from app.services.indicators import HAS_TALIB, IndicatorEngine
 from app.services.order_store import OrderEventStore
@@ -31,6 +32,10 @@ from app.strategies.base import IndicatorStrategy
 
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
+DEMO_MARKET_WARNING = (
+    "Live market data is unavailable, so the app is showing deterministic demo data. "
+    "Add COINAPI_KEY or allow CCXT exchange API access before relying on signals."
+)
 
 app = FastAPI(
     title="Trading Bot API",
@@ -105,6 +110,7 @@ async def health(settings: Settings = Depends(get_settings)) -> dict[str, Any]:
         "environment": settings.app_env,
         "paper_trading": settings.paper_trading,
         "coinapi_configured": bool(settings.coinapi_key_value),
+        "demo_market_data_enabled": settings.demo_market_data_enabled,
         "talib_backend": "TA-Lib" if HAS_TALIB else "pandas-fallback",
     }
 
@@ -189,6 +195,7 @@ async def price(
     quote: str = "USD",
     fallback_exchange_id: str = "binance",
     fallback_symbol: str | None = None,
+    settings: Settings = Depends(get_settings),
     client: CoinApiClient = Depends(coinapi_client),
     gateway: ExchangeGateway = Depends(exchange_gateway),
 ) -> Any:
@@ -200,6 +207,19 @@ async def price(
         try:
             ticker = await gateway.fetch_ticker(fallback_exchange_id, symbol)
         except ExchangeError as fallback_exc:
+            if settings.demo_market_data_enabled:
+                ticker = demo_tickers(symbol, [fallback_exchange_id])[0]
+                rate = _ticker_rate(ticker.bid, ticker.ask, ticker.last)
+                return {
+                    "asset_id_base": base.upper(),
+                    "asset_id_quote": quote.upper(),
+                    "rate": rate,
+                    "time": ticker.timestamp,
+                    "source": "demo",
+                    "exchange": fallback_exchange_id,
+                    "symbol": symbol,
+                    "warning": f"{_coinapi_user_message(exc)} {DEMO_MARKET_WARNING}",
+                }
             raise HTTPException(
                 status_code=503,
                 detail=(
@@ -253,11 +273,14 @@ async def coinapi_ohlcv(
 async def exchange_ticker(
     exchange_id: str = "binance",
     symbol: str = "BTC/USDT",
+    settings: Settings = Depends(get_settings),
     gateway: ExchangeGateway = Depends(exchange_gateway),
 ) -> Any:
     try:
         return _json(await gateway.fetch_ticker(exchange_id, symbol))
     except ExchangeError as exc:
+        if settings.demo_market_data_enabled:
+            return _with_demo_warning(_json(demo_tickers(symbol, [exchange_id])[0]))
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
@@ -265,6 +288,7 @@ async def exchange_ticker(
 async def exchange_tickers(
     symbol: str = "BTC/USDT",
     exchange_ids: str | None = Query(default=None, description="Comma-separated CCXT exchange ids"),
+    settings: Settings = Depends(get_settings),
     gateway: ExchangeGateway = Depends(exchange_gateway),
     store: OrderEventStore = Depends(order_event_store),
 ) -> Any:
@@ -274,6 +298,10 @@ async def exchange_tickers(
         _record_market_snapshots(tickers, store)
         return tickers
     except ExchangeError as exc:
+        if settings.demo_market_data_enabled:
+            tickers = _ticker_payload(demo_tickers(symbol, ids), demo=True)
+            _record_market_snapshots(tickers, store)
+            return tickers
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
@@ -286,6 +314,7 @@ async def indicators(
     period_id: str = "1HRS",
     timeframe: str = "1h",
     limit: int = Query(default=100, ge=30, le=1000),
+    settings: Settings = Depends(get_settings),
     client: CoinApiClient = Depends(coinapi_client),
     gateway: ExchangeGateway = Depends(exchange_gateway),
     engine: IndicatorEngine = Depends(indicator_engine),
@@ -298,6 +327,7 @@ async def indicators(
         period_id=period_id,
         timeframe=timeframe,
         limit=limit,
+        settings=settings,
         client=client,
         gateway=gateway,
     )
@@ -327,17 +357,23 @@ async def strategy_signal(
             if request.exchange_ids
             else None
         )
+        used_demo_tickers = False
         try:
             tickers = await gateway.fetch_tickers(request.symbol, ids)
         except ExchangeError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+            if settings.demo_market_data_enabled:
+                tickers = demo_tickers(request.symbol, ids)
+                used_demo_tickers = True
+            else:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
 
         strategy = ArbitrageStrategy(settings.min_arbitrage_profit_pct, settings.fee_buffer_pct)
         signal = _json(strategy.signal(request.symbol, tickers))
         signal["metadata"] = {
             **signal.get("metadata", {}),
-            "data_source": "exchange_tickers",
+            "data_source": "demo_tickers" if used_demo_tickers else "exchange_tickers",
             "exchanges_scanned": [ticker.exchange for ticker in tickers],
+            "warning": DEMO_MARKET_WARNING if used_demo_tickers else None,
         }
         _record_strategy_run(request, signal, store)
         return signal
@@ -350,6 +386,7 @@ async def strategy_signal(
         period_id=request.period_id,
         timeframe=request.timeframe,
         limit=request.limit,
+        settings=settings,
         client=client,
         gateway=gateway,
     )
@@ -374,18 +411,26 @@ async def arbitrage_scan(
     store: OrderEventStore = Depends(order_event_store),
 ) -> Any:
     ids = [item.strip() for item in exchange_ids.split(",") if item.strip()] if exchange_ids else None
+    used_demo_tickers = False
     try:
         tickers = await gateway.fetch_tickers(symbol, ids)
     except ExchangeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    _record_market_snapshots(_json(tickers), store)
+        if settings.demo_market_data_enabled:
+            tickers = demo_tickers(symbol, ids)
+            used_demo_tickers = True
+        else:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    tickers_payload = _ticker_payload(tickers, demo=used_demo_tickers)
+    _record_market_snapshots(tickers_payload, store)
 
     strategy = ArbitrageStrategy(settings.min_arbitrage_profit_pct, settings.fee_buffer_pct)
     return _json(
         {
             "signal": strategy.signal(symbol, tickers),
             "opportunities": strategy.scan(symbol, tickers),
-            "tickers": tickers,
+            "tickers": tickers_payload,
+            "source": "demo" if used_demo_tickers else "exchange",
+            "warning": DEMO_MARKET_WARNING if used_demo_tickers else None,
         }
     )
 
@@ -566,6 +611,7 @@ async def reconcile_orders(
 @app.post("/api/backtests/run")
 async def backtest_run(
     request: StrategySignalRequest,
+    settings: Settings = Depends(get_settings),
     client: CoinApiClient = Depends(coinapi_client),
     gateway: ExchangeGateway = Depends(exchange_gateway),
     engine: IndicatorEngine = Depends(indicator_engine),
@@ -580,6 +626,7 @@ async def backtest_run(
         period_id=request.period_id,
         timeframe=request.timeframe,
         limit=request.limit,
+        settings=settings,
         client=client,
         gateway=gateway,
     )
@@ -695,6 +742,21 @@ def _record_market_snapshots(tickers: list[dict[str, Any]], store: OrderEventSto
     )
 
 
+def _ticker_payload(tickers: list[Any], demo: bool = False) -> list[dict[str, Any]]:
+    return [_with_demo_warning(item) if demo else _json(item) for item in tickers]
+
+
+def _with_demo_warning(payload: Any) -> dict[str, Any]:
+    row = _json(payload)
+    if not isinstance(row, dict):
+        row = {"value": row}
+    return {
+        **row,
+        "source": "demo",
+        "warning": DEMO_MARKET_WARNING,
+    }
+
+
 def _record_balances(exchange_id: str, raw: dict[str, Any], store: OrderEventStore) -> None:
     now = datetime.now(UTC)
     assets = set(raw.get("total", {})) | set(raw.get("free", {})) | set(raw.get("used", {}))
@@ -744,6 +806,7 @@ async def _load_candles_with_metadata(
     period_id: str,
     timeframe: str,
     limit: int,
+    settings: Settings,
     client: CoinApiClient,
     gateway: ExchangeGateway,
 ) -> tuple[list[Candle], str, str | None]:
@@ -755,6 +818,12 @@ async def _load_candles_with_metadata(
             try:
                 return await gateway.fetch_ohlcv(exchange_id, symbol, timeframe, limit), "exchange", warning
             except ExchangeError as fallback_exc:
+                if settings.demo_market_data_enabled:
+                    return (
+                        demo_candles(symbol, limit, timeframe),
+                        "demo",
+                        f"{warning} {DEMO_MARKET_WARNING}",
+                    )
                 raise HTTPException(
                     status_code=503,
                     detail=(
@@ -766,6 +835,8 @@ async def _load_candles_with_metadata(
     try:
         return await gateway.fetch_ohlcv(exchange_id, symbol, timeframe, limit), "exchange", None
     except ExchangeError as exc:
+        if settings.demo_market_data_enabled:
+            return demo_candles(symbol, limit, timeframe), "demo", DEMO_MARKET_WARNING
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
