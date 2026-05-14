@@ -16,10 +16,14 @@ export type PublicConfig = {
   paper_trading: boolean;
   enable_live_trading: boolean;
   sandbox_mode: boolean;
+  kill_switch_enabled: boolean;
   max_order_usd: string;
+  min_order_usd: string;
   max_daily_loss_usd: string;
+  max_slippage_pct: string;
   min_arbitrage_profit_pct: string;
   fee_buffer_pct: string;
+  database_url_configured: boolean;
   order_database_path: string;
 };
 
@@ -121,4 +125,23 @@ export type OrderHistoryEntry = {
 
 export type OrderHistoryResponse = {
   orders: OrderHistoryEntry[];
+};
+
+export type EnvironmentStatus = {
+  mode: "paper" | "sandbox" | "live" | "blocked";
+  paper_trading: boolean;
+  sandbox_mode: boolean;
+  live_enabled: boolean;
+  kill_switch_enabled: boolean;
+  exchange_connected: boolean;
+  configured_exchanges: string[];
+  testnet_keys_present: boolean;
+  sql_database: {
+    connected: boolean;
+    path: string;
+    error?: string;
+  };
+  last_strategy_run?: Record<string, unknown> | null;
+  last_risk_decision?: Record<string, unknown> | null;
+  last_order_result?: OrderHistoryEntry | null;
 };

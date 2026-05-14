@@ -109,6 +109,31 @@ async def health(settings: Settings = Depends(get_settings)) -> dict[str, Any]:
     }
 
 
+@app.get("/api/environment/status")
+async def environment_status(
+    settings: Settings = Depends(get_settings),
+    store: OrderEventStore = Depends(order_event_store),
+) -> dict[str, Any]:
+    strategy_runs = store.list_strategy_runs(limit=1)
+    risk_checks = store.list_risk_checks(limit=1)
+    order_events = store.list_recent(limit=1)
+    credentials = settings.exchange_credentials
+    return {
+        "mode": _execution_mode(settings),
+        "paper_trading": settings.paper_trading,
+        "sandbox_mode": settings.sandbox_mode,
+        "live_enabled": settings.enable_live_trading,
+        "kill_switch_enabled": settings.kill_switch_enabled,
+        "exchange_connected": bool(settings.exchange_id_list),
+        "configured_exchanges": settings.exchange_id_list,
+        "testnet_keys_present": settings.sandbox_mode and any(credentials.values()),
+        "sql_database": store.health(),
+        "last_strategy_run": strategy_runs[0] if strategy_runs else None,
+        "last_risk_decision": risk_checks[0] if risk_checks else None,
+        "last_order_result": order_events[0] if order_events else None,
+    }
+
+
 @app.get("/api/config")
 async def config(settings: Settings = Depends(get_settings)) -> dict[str, Any]:
     return settings.public_dict()
@@ -241,10 +266,13 @@ async def exchange_tickers(
     symbol: str = "BTC/USDT",
     exchange_ids: str | None = Query(default=None, description="Comma-separated CCXT exchange ids"),
     gateway: ExchangeGateway = Depends(exchange_gateway),
+    store: OrderEventStore = Depends(order_event_store),
 ) -> Any:
     ids = [item.strip() for item in exchange_ids.split(",") if item.strip()] if exchange_ids else None
     try:
-        return _json(await gateway.fetch_tickers(symbol, ids))
+        tickers = _json(await gateway.fetch_tickers(symbol, ids))
+        _record_market_snapshots(tickers, store)
+        return tickers
     except ExchangeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -291,6 +319,7 @@ async def strategy_signal(
     client: CoinApiClient = Depends(coinapi_client),
     gateway: ExchangeGateway = Depends(exchange_gateway),
     engine: IndicatorEngine = Depends(indicator_engine),
+    store: OrderEventStore = Depends(order_event_store),
 ) -> Any:
     if request.strategy == "arbitrage":
         ids = (
@@ -310,6 +339,7 @@ async def strategy_signal(
             "data_source": "exchange_tickers",
             "exchanges_scanned": [ticker.exchange for ticker in tickers],
         }
+        _record_strategy_run(request, signal, store)
         return signal
 
     candles, data_source, warning = await _load_candles_with_metadata(
@@ -331,6 +361,7 @@ async def strategy_signal(
         "data_source": data_source,
         "warning": warning,
     }
+    _record_strategy_run(request, signal, store)
     return signal
 
 
@@ -340,12 +371,14 @@ async def arbitrage_scan(
     exchange_ids: str | None = Query(default=None, description="Comma-separated CCXT exchange ids"),
     settings: Settings = Depends(get_settings),
     gateway: ExchangeGateway = Depends(exchange_gateway),
+    store: OrderEventStore = Depends(order_event_store),
 ) -> Any:
     ids = [item.strip() for item in exchange_ids.split(",") if item.strip()] if exchange_ids else None
     try:
         tickers = await gateway.fetch_tickers(symbol, ids)
     except ExchangeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    _record_market_snapshots(_json(tickers), store)
 
     strategy = ArbitrageStrategy(settings.min_arbitrage_profit_pct, settings.fee_buffer_pct)
     return _json(
@@ -358,11 +391,16 @@ async def arbitrage_scan(
 
 
 @app.get("/api/balance/{exchange_id}")
-async def balance(exchange_id: str, gateway: ExchangeGateway = Depends(exchange_gateway)) -> Any:
+async def balance(
+    exchange_id: str,
+    gateway: ExchangeGateway = Depends(exchange_gateway),
+    store: OrderEventStore = Depends(order_event_store),
+) -> Any:
     try:
         raw = await gateway.fetch_balance(exchange_id)
     except ExchangeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    _record_balances(exchange_id, raw, store)
     return {
         "exchange": exchange_id,
         "total": raw.get("total", {}),
@@ -380,7 +418,8 @@ async def order(
 ) -> Any:
     risk = RiskManager(settings)
     try:
-        risk.validate_order(request.amount, request.reference_price or request.price)
+        risk.validate_order(request.amount, request.reference_price or request.price, request.price)
+        _record_risk_check(request, "approved", "Risk checks passed", settings, store)
         result = await gateway.place_order(
             exchange_id=request.exchange_id,
             symbol=request.symbol,
@@ -393,6 +432,7 @@ async def order(
         event = _record_order_event(request, result, settings, store)
         return {**_json(result), "history_event": event}
     except RiskError as exc:
+        _record_risk_check(request, "rejected", str(exc), settings, store)
         _record_order_event(request, {"status": "rejected", "message": str(exc)}, settings, store)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ExchangeError as exc:
@@ -406,6 +446,102 @@ async def order_history(
     store: OrderEventStore = Depends(order_event_store),
 ) -> Any:
     return {"orders": store.list_recent(limit)}
+
+
+@app.get("/api/risk/checks")
+async def risk_check_history(
+    limit: int = Query(default=25, ge=1, le=100),
+    store: OrderEventStore = Depends(order_event_store),
+) -> Any:
+    return {"risk_checks": store.list_risk_checks(limit)}
+
+
+@app.get("/api/strategies/runs")
+async def strategy_run_history(
+    limit: int = Query(default=25, ge=1, le=100),
+    store: OrderEventStore = Depends(order_event_store),
+) -> Any:
+    return {"strategy_runs": store.list_strategy_runs(limit)}
+
+
+@app.get("/api/market/snapshots")
+async def market_snapshot_history(
+    limit: int = Query(default=50, ge=1, le=200),
+    store: OrderEventStore = Depends(order_event_store),
+) -> Any:
+    return {"snapshots": store.list_market_snapshots(limit)}
+
+
+@app.get("/api/positions")
+async def positions(limit: int = Query(default=100, ge=1, le=500), store: OrderEventStore = Depends(order_event_store)) -> Any:
+    return {"positions": store.list_balances(limit)}
+
+
+@app.get("/api/orders/reconcile")
+async def reconcile_orders(
+    exchange_id: str = "binance",
+    symbol: str = "BTC/USDT",
+    settings: Settings = Depends(get_settings),
+    store: OrderEventStore = Depends(order_event_store),
+) -> Any:
+    recent = [
+        item
+        for item in store.list_recent(limit=50)
+        if item["exchange_id"] == exchange_id and item["symbol"] == symbol
+    ]
+    if settings.paper_trading:
+        return {
+            "status": "paper_only",
+            "exchange_id": exchange_id,
+            "symbol": symbol,
+            "message": "Paper orders are reconciled against the local SQL audit trail only.",
+            "orders": recent,
+        }
+    return {
+        "status": "manual_review_required",
+        "exchange_id": exchange_id,
+        "symbol": symbol,
+        "message": "Live reconciliation needs exchange order ids and closed/open order polling before production use.",
+        "orders": recent,
+    }
+
+
+@app.post("/api/backtests/run")
+async def backtest_run(
+    request: StrategySignalRequest,
+    client: CoinApiClient = Depends(coinapi_client),
+    gateway: ExchangeGateway = Depends(exchange_gateway),
+    engine: IndicatorEngine = Depends(indicator_engine),
+) -> Any:
+    if request.strategy == "arbitrage":
+        raise HTTPException(status_code=422, detail="Backtests require an OHLCV strategy, not arbitrage tickers")
+    candles, data_source, warning = await _load_candles_with_metadata(
+        source=request.source,
+        symbol=request.symbol,
+        exchange_id=request.exchange_id,
+        coinapi_symbol_id=request.coinapi_symbol_id,
+        period_id=request.period_id,
+        timeframe=request.timeframe,
+        limit=request.limit,
+        client=client,
+        gateway=gateway,
+    )
+    strategy = _indicator_strategy(request.strategy)
+    signals = [
+        _json(strategy.signal(request.symbol, candles[:index], engine.calculate(candles[:index])))
+        for index in range(30, len(candles) + 1)
+    ]
+    actionable = [signal for signal in signals if signal["action"] in {"buy", "sell"}]
+    return {
+        "strategy": request.strategy,
+        "symbol": request.symbol,
+        "source": data_source,
+        "warning": warning,
+        "candles": len(candles),
+        "signals_tested": len(signals),
+        "actionable_signals": len(actionable),
+        "last_signal": signals[-1] if signals else None,
+    }
 
 
 def _record_order_event(
@@ -430,6 +566,94 @@ def _record_order_event(
         "result": result,
     }
     return store.add(_json(event))
+
+
+def _record_strategy_run(
+    request: StrategySignalRequest,
+    signal: dict[str, Any],
+    store: OrderEventStore,
+) -> dict[str, Any]:
+    return store.add_strategy_run(
+        _json(
+            {
+                "created_at": datetime.now(UTC),
+                "strategy": request.strategy,
+                "symbol": request.symbol,
+                "source": signal.get("metadata", {}).get("data_source", request.source),
+                "action": signal.get("action", "hold"),
+                "confidence": signal.get("confidence", 0),
+                "reason": signal.get("reason", ""),
+                "input": _json(request.model_dump()),
+                "signal": signal,
+            }
+        )
+    )
+
+
+def _record_risk_check(
+    request: OrderRequest,
+    status: str,
+    reason: str,
+    settings: Settings,
+    store: OrderEventStore,
+) -> dict[str, Any]:
+    reference_price = request.reference_price or request.price
+    notional = request.amount * reference_price if reference_price else None
+    return store.add_risk_check(
+        _json(
+            {
+                "created_at": datetime.now(UTC),
+                "status": status,
+                "exchange_id": request.exchange_id,
+                "symbol": request.symbol,
+                "side": request.side,
+                "amount": request.amount,
+                "reference_price": reference_price,
+                "notional": notional,
+                "max_order_usd": settings.max_order_usd,
+                "max_daily_loss_usd": settings.max_daily_loss_usd,
+                "reason": reason,
+            }
+        )
+    )
+
+
+def _record_market_snapshots(tickers: list[dict[str, Any]], store: OrderEventStore) -> None:
+    now = datetime.now(UTC)
+    store.add_market_snapshots(
+        _json(
+            [
+                {
+                    "created_at": now,
+                    "exchange_id": ticker["exchange"],
+                    "symbol": ticker["symbol"],
+                    "bid": ticker.get("bid"),
+                    "ask": ticker.get("ask"),
+                    "last": ticker.get("last"),
+                    "exchange_timestamp": ticker.get("timestamp"),
+                }
+                for ticker in tickers
+            ]
+        )
+    )
+
+
+def _record_balances(exchange_id: str, raw: dict[str, Any], store: OrderEventStore) -> None:
+    now = datetime.now(UTC)
+    assets = set(raw.get("total", {})) | set(raw.get("free", {})) | set(raw.get("used", {}))
+    for asset in sorted(assets):
+        store.upsert_balance(
+            _json(
+                {
+                    "updated_at": now,
+                    "exchange_id": exchange_id,
+                    "asset": asset,
+                    "total": raw.get("total", {}).get(asset),
+                    "free": raw.get("free", {}).get(asset),
+                    "used": raw.get("used", {}).get(asset),
+                }
+            )
+        )
 
 
 async def _load_candles(
@@ -513,6 +737,16 @@ def _ticker_rate(bid: float | None, ask: float | None, last: float | None) -> fl
 def _fallback_symbol(base: str, quote: str) -> str:
     normalized_quote = "USDT" if quote.upper() == "USD" else quote.upper()
     return f"{base.upper()}/{normalized_quote}"
+
+
+def _execution_mode(settings: Settings) -> str:
+    if settings.paper_trading:
+        return "paper"
+    if settings.sandbox_mode:
+        return "sandbox"
+    if settings.enable_live_trading:
+        return "live"
+    return "blocked"
 
 
 def _coinapi_user_message(exc: CoinApiError) -> str:

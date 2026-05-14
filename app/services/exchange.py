@@ -42,6 +42,7 @@ class ExchangeGateway:
             {
                 "enableRateLimit": True,
                 "timeout": 20000,
+                "options": {"defaultType": "spot"},
                 **credentials,
             }
         )
@@ -174,6 +175,16 @@ class ExchangeGateway:
     ) -> dict[str, Any]:
         exchange = self._exchange(exchange_id)
         try:
+            exchange.load_markets()
+            if symbol not in exchange.markets:
+                raise ExchangeError(f"{symbol} is not available on {exchange_id}")
+            market = exchange.markets[symbol]
+            min_amount = market.get("limits", {}).get("amount", {}).get("min")
+            if min_amount is not None and amount < float(min_amount):
+                raise ExchangeError(f"{symbol} amount {amount} is below exchange minimum {min_amount}")
+            amount = float(exchange.amount_to_precision(symbol, amount))
+            if price is not None:
+                price = float(exchange.price_to_precision(symbol, price))
             return exchange.create_order(symbol, order_type, side, amount, price)
         except Exception as exc:  # pragma: no cover - network and credential dependent
             raise ExchangeError(f"{exchange_id} order failed: {exc}") from exc

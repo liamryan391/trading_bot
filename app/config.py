@@ -25,11 +25,15 @@ class Settings(BaseSettings):
     paper_trading: bool = True
     enable_live_trading: bool = False
     sandbox_mode: bool = True
+    kill_switch_enabled: bool = False
 
     max_order_usd: Decimal = Decimal("25")
+    min_order_usd: Decimal = Decimal("5")
     max_daily_loss_usd: Decimal = Decimal("100")
+    max_slippage_pct: Decimal = Decimal("0.50")
     min_arbitrage_profit_pct: Decimal = Decimal("0.35")
     fee_buffer_pct: Decimal = Decimal("0.10")
+    database_url: str | None = None
     order_database_path: Path = Path("data/trading_bot.sqlite3")
 
     model_config = SettingsConfigDict(
@@ -70,10 +74,14 @@ class Settings(BaseSettings):
             "paper_trading": self.paper_trading,
             "enable_live_trading": self.enable_live_trading,
             "sandbox_mode": self.sandbox_mode,
+            "kill_switch_enabled": self.kill_switch_enabled,
             "max_order_usd": str(self.max_order_usd),
+            "min_order_usd": str(self.min_order_usd),
             "max_daily_loss_usd": str(self.max_daily_loss_usd),
+            "max_slippage_pct": str(self.max_slippage_pct),
             "min_arbitrage_profit_pct": str(self.min_arbitrage_profit_pct),
             "fee_buffer_pct": str(self.fee_buffer_pct),
+            "database_url_configured": bool(self.database_url),
             "order_database_path": str(self.order_database_path),
         }
 

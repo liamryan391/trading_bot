@@ -43,6 +43,15 @@ class OrderEndpointTests(unittest.TestCase):
         self.assertEqual(history[0]["symbol"], "BTC/USDT")
         self.assertTrue(history[0]["paper_trading"])
 
+        checks = self.client.get("/api/risk/checks").json()["risk_checks"]
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(checks[0]["status"], "approved")
+
+        environment = self.client.get("/api/environment/status").json()
+        self.assertEqual(environment["mode"], "paper")
+        self.assertEqual(environment["last_order_result"]["status"], "paper")
+        self.assertTrue(environment["sql_database"]["connected"])
+
     def test_rejected_order_is_recorded_in_history(self) -> None:
         response = self.client.post(
             "/api/orders",
@@ -61,6 +70,10 @@ class OrderEndpointTests(unittest.TestCase):
         history = self.client.get("/api/orders/history").json()["orders"]
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0]["status"], "rejected")
+
+        checks = self.client.get("/api/risk/checks").json()["risk_checks"]
+        self.assertEqual(len(checks), 1)
+        self.assertEqual(checks[0]["status"], "rejected")
 
 
 if __name__ == "__main__":

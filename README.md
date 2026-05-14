@@ -76,12 +76,16 @@ DEFAULT_COINAPI_SYMBOL_ID=BINANCE_SPOT_BTC_USDT
 PAPER_TRADING=true
 ENABLE_LIVE_TRADING=false
 SANDBOX_MODE=true
+KILL_SWITCH_ENABLED=false
 
 MAX_ORDER_USD=25
+MIN_ORDER_USD=5
 MAX_DAILY_LOSS_USD=100
+MAX_SLIPPAGE_PCT=0.50
 MIN_ARBITRAGE_PROFIT_PCT=0.35
 FEE_BUFFER_PCT=0.10
 
+DATABASE_URL=
 ORDER_DATABASE_PATH=data/trading_bot.sqlite3
 ```
 
@@ -178,7 +182,7 @@ Market making bot:
 
 ## SQL Storage
 
-The app now records order events into a local SQL database file at `ORDER_DATABASE_PATH`.
+The app now records order events, strategy runs, risk checks, market snapshots, and balances into a local SQL database file at `ORDER_DATABASE_PATH`.
 The default is `data/trading_bot.sqlite3`, which keeps local development simple and requires no extra driver.
 
 For your Windows/local SQL setup, the recommended production target is **SQL Server with T-SQL** rather than MySQL. That fits better if you already use Microsoft SQL tooling locally, gives strong audit-table support, and is a good match for a trading execution log.
@@ -189,7 +193,16 @@ A starter SQL Server schema is included at:
 sql/sqlserver_order_events.sql
 ```
 
-Use the local SQLite file while developing the bot flow. Move the `order_events` table to SQL Server/T-SQL once you are ready to keep a longer-term audit trail and connect the backend to your SQL Server instance.
+Use the local SQLite file while developing the bot flow. Move the audit tables to SQL Server/T-SQL once you are ready to keep a longer-term trading record and connect the backend to your SQL Server instance.
+
+Alembic scaffolding is included for the production migration path:
+
+```powershell
+set DATABASE_URL=mssql+pyodbc://localhost/trading_bot?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes&trusted_connection=yes
+alembic upgrade head
+```
+
+Install the SQL Server ODBC driver locally before using the SQL Server `DATABASE_URL`.
 
 ## Order Safety
 
@@ -199,9 +212,24 @@ Live order placement is blocked unless all of these are true:
 - `ENABLE_LIVE_TRADING=true`
 - The order request includes `confirm_live_trading=true`
 - The notional value passes `MAX_ORDER_USD`
+- The notional value is at or above `MIN_ORDER_USD`
+- Any limit price passes `MAX_SLIPPAGE_PCT` against the reference price
+- `KILL_SWITCH_ENABLED=false`
 - A positive `reference_price` or `price` is provided for risk checks
 
 Start with exchange sandbox keys where possible. Keep early orders tiny, inspect exchange permissions, and verify fees and minimum order sizes for each venue.
+
+## Sandbox and Testnet Trading
+
+The safe test path is:
+
+1. Keep `PAPER_TRADING=true` while testing strategy and risk output.
+2. Switch to sandbox only after the paper history looks correct.
+3. Use Binance Spot Testnet API keys with virtual funds for realistic order-flow testing.
+4. Keep `SANDBOX_MODE=true`, `ENABLE_LIVE_TRADING=false`, and `KILL_SWITCH_ENABLED=false` while testing sandbox order paths.
+5. Only consider live trading after reconciliation, precision checks, balances, and SQL audit history are all working.
+
+CCXT sandbox mode is enabled through `set_sandbox_mode(True)` where the exchange supports it. Binance Spot Testnet is the main practical target for crypto execution testing because it supports virtual spot balances and real API order semantics without using live funds.
 
 ## Useful API Routes
 
@@ -215,6 +243,13 @@ Start with exchange sandbox keys where possible. Keep early orders tiny, inspect
 - `GET /api/balance/{exchange_id}`
 - `POST /api/orders`
 - `GET /api/orders/history`
+- `GET /api/environment/status`
+- `GET /api/risk/checks`
+- `GET /api/strategies/runs`
+- `GET /api/market/snapshots`
+- `GET /api/positions`
+- `GET /api/orders/reconcile`
+- `POST /api/backtests/run`
 
 Example strategy request:
 

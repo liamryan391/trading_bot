@@ -23,6 +23,7 @@ import {
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import {
   getConfig,
+  getEnvironmentStatus,
   getExchangeTickers,
   getHealth,
   getOrderHistory,
@@ -35,6 +36,7 @@ import { formatNumber, formatPercent } from "./lib/format";
 import type {
   ArbitrageOpportunity,
   ArbitrageScan,
+  EnvironmentStatus,
   Health,
   OrderHistoryEntry,
   PriceResponse,
@@ -825,7 +827,11 @@ function SetupHelp({ system, setPage }: { system: LoadState; setPage: (page: Pag
             ["EXCHANGE_API_KEYS_JSON", "Optional credentials for balances or real orders."],
             ["PAPER_TRADING", "Keep true while developing and testing."],
             ["ENABLE_LIVE_TRADING", "Must be true before the live order path can run."],
+            ["KILL_SWITCH_ENABLED", "Emergency stop that blocks all order placement."],
             ["MAX_ORDER_USD", "Hard notional cap checked before order placement."],
+            ["MIN_ORDER_USD", "Minimum notional size checked before order placement."],
+            ["MAX_SLIPPAGE_PCT", "Maximum allowed gap between reference and limit price."],
+            ["DATABASE_URL", "Optional SQL Server connection string for Alembic migrations."],
             ["ORDER_DATABASE_PATH", "Local SQL database file used for order event history."],
           ].map(([name, body]) => (
             <div key={name} className="rounded-lg border border-line bg-slate-50 p-4">
@@ -1311,7 +1317,8 @@ function StrategyLab({ system }: { system: LoadState }) {
   });
   const [tickers, setTickers] = useState<Ticker[]>([]);
   const [history, setHistory] = useState<OrderHistoryEntry[]>([]);
-  const [busyAction, setBusyAction] = useState<"market" | "history" | undefined>();
+  const [environment, setEnvironment] = useState<EnvironmentStatus | undefined>();
+  const [busyAction, setBusyAction] = useState<"market" | "history" | "environment" | undefined>();
   const [notice, setNotice] = useState<Notice | undefined>();
   const [marketUpdatedAt, setMarketUpdatedAt] = useState<string | undefined>();
 
@@ -1326,7 +1333,7 @@ function StrategyLab({ system }: { system: LoadState }) {
   }, [system.config]);
 
   useEffect(() => {
-    void loadOrderHistory();
+    void loadLabState();
   }, []);
 
   const maxOrder = Number(system.config?.max_order_usd ?? 0);
@@ -1405,6 +1412,25 @@ function StrategyLab({ system }: { system: LoadState }) {
     }
   }
 
+  async function loadEnvironmentStatus() {
+    setBusyAction((current) => current ?? "environment");
+    try {
+      setEnvironment(await getEnvironmentStatus());
+    } catch (error) {
+      setNotice({
+        title: "Environment status unavailable",
+        body: error instanceof Error ? error.message : "Unable to load environment status.",
+        tone: "warning",
+      });
+    } finally {
+      setBusyAction((current) => (current === "environment" ? undefined : current));
+    }
+  }
+
+  async function loadLabState() {
+    await Promise.all([loadOrderHistory(), loadEnvironmentStatus()]);
+  }
+
   return (
     <div className="grid gap-5">
       <PageIntro
@@ -1431,6 +1457,12 @@ function StrategyLab({ system }: { system: LoadState }) {
           caption={marketUpdatedAt ? `Updated ${marketUpdatedAt}` : "Cross-exchange view"}
         />
       </section>
+
+      <EnvironmentPanel
+        environment={environment}
+        loading={busyAction === "environment"}
+        onRefresh={() => void loadEnvironmentStatus()}
+      />
 
       <section className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
         <Panel
@@ -1511,12 +1543,14 @@ function StrategyLab({ system }: { system: LoadState }) {
           <div className="grid gap-3">
             {[
               ["GET", "/health", "Server, CoinAPI, trading mode, and indicator backend."],
+              ["GET", "/api/environment/status", "Paper, sandbox, live, SQL, and last decision status."],
               ["GET", "/api/config", "Public runtime configuration and SQL audit path."],
               ["GET", "/api/exchanges/tickers", "Current exchange bid, ask, last, and timestamps."],
               ["POST", "/api/strategies/signal", "Trend, mean reversion, GRID, DCA, market making, or arbitrage signal."],
               ["GET", "/api/arbitrage/scan", "Cross-exchange arbitrage opportunities using CCXT tickers."],
               ["POST", "/api/orders", "Paper or live order placement with explicit safety gates."],
               ["GET", "/api/orders/history", "SQL-backed order event history."],
+              ["POST", "/api/backtests/run", "Historical OHLCV replay before sandbox or live orders."],
             ].map(([method, path, body]) => (
               <div key={path} className="grid gap-2 rounded-lg border border-line bg-slate-50 p-4 sm:grid-cols-[80px_1fr]">
                 <span className="rounded-md bg-teal-950 px-2 py-1 text-center text-xs font-black text-white">
@@ -1532,6 +1566,67 @@ function StrategyLab({ system }: { system: LoadState }) {
         </Panel>
       </section>
     </div>
+  );
+}
+
+function EnvironmentPanel({
+  environment,
+  loading,
+  onRefresh,
+}: {
+  environment?: EnvironmentStatus;
+  loading: boolean;
+  onRefresh: () => void;
+}) {
+  const mode = environment?.mode ?? "paper";
+  const modeText = mode === "live" ? "Live" : mode === "sandbox" ? "Sandbox" : mode === "blocked" ? "Blocked" : "Paper";
+  return (
+    <Panel
+      title="Test Mode and Environment"
+      icon={ShieldCheck}
+      action={
+        <ActionButton
+          icon={RefreshCw}
+          label="Refresh environment"
+          loading={loading}
+          tone="light"
+          onClick={onRefresh}
+        />
+      }
+    >
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <SignalStat label="Mode" value={modeText} />
+        <SignalStat label="Exchange Connected" value={environment?.exchange_connected ? "Yes" : "No"} />
+        <SignalStat label="Testnet Keys" value={environment?.testnet_keys_present ? "Present" : "Missing"} />
+        <SignalStat label="SQL Database" value={environment?.sql_database.connected ? "Connected" : "Unavailable"} />
+      </div>
+      <div className="mt-4 grid gap-3 md:grid-cols-3">
+        <ChecklistItem
+          ready={environment?.paper_trading !== false || environment?.sandbox_mode === true}
+          title="Paper or sandbox first"
+          body={
+            environment
+              ? `Current execution path is ${modeText.toLowerCase()}.`
+              : "Load environment status before testing orders."
+          }
+        />
+        <ChecklistItem
+          ready={environment?.kill_switch_enabled === false}
+          title="Kill switch"
+          body={environment?.kill_switch_enabled ? "Order placement is blocked." : "Order placement is not globally blocked."}
+        />
+        <ChecklistItem
+          ready={environment?.live_enabled === false || environment?.paper_trading === false}
+          title="Live flag"
+          body={environment?.live_enabled ? "Live flag is enabled; use sandbox checks carefully." : "Live flag is off."}
+        />
+      </div>
+      <div className="mt-4 grid gap-3 md:grid-cols-3">
+        <SignalStat label="Last Strategy Run" value={statusSummary(environment?.last_strategy_run, "strategy")} />
+        <SignalStat label="Last Risk Decision" value={statusSummary(environment?.last_risk_decision, "status")} />
+        <SignalStat label="Last Order Result" value={environment?.last_order_result?.status ?? "-"} />
+      </div>
+    </Panel>
   );
 }
 
@@ -1992,6 +2087,11 @@ function bestTicker(tickers: Ticker[], field: "bid" | "ask", mode: "min" | "max"
 function barWidth(value: number, max: number) {
   if (!Number.isFinite(value) || !Number.isFinite(max) || max <= 0) return "0%";
   return `${Math.min(100, Math.max(0, (value / max) * 100)).toFixed(1)}%`;
+}
+
+function statusSummary(value: Record<string, unknown> | null | undefined, key: string) {
+  const raw = value?.[key];
+  return typeof raw === "string" && raw.trim() ? raw : "-";
 }
 
 function strategyDefinition(id: StrategyId) {

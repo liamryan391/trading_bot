@@ -1,5 +1,6 @@
 import type {
   ArbitrageScan,
+  EnvironmentStatus,
   Health,
   OrderHistoryResponse,
   OrderRequest,
@@ -57,6 +58,10 @@ export function getHealth() {
 
 export function getConfig() {
   return request<PublicConfig>("/api/config");
+}
+
+export function getEnvironmentStatus() {
+  return request<EnvironmentStatus>("/api/environment/status");
 }
 
 export function getPrice(base: string, quote: string, fallbackExchangeId: string, fallbackSymbol: string) {
