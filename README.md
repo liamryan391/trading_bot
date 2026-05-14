@@ -225,11 +225,25 @@ The safe test path is:
 
 1. Keep `PAPER_TRADING=true` while testing strategy and risk output.
 2. Switch to sandbox only after the paper history looks correct.
-3. Use Binance Spot Testnet API keys with virtual funds for realistic order-flow testing.
-4. Keep `SANDBOX_MODE=true`, `ENABLE_LIVE_TRADING=false`, and `KILL_SWITCH_ENABLED=false` while testing sandbox order paths.
-5. Only consider live trading after reconciliation, precision checks, balances, and SQL audit history are all working.
+3. Create Binance Spot Testnet API keys at `https://testnet.binance.vision/`.
+4. Use only those testnet keys with virtual funds for realistic order-flow testing.
+5. Set `SANDBOX_MODE=true`, `PAPER_TRADING=false`, `ENABLE_LIVE_TRADING=true`, and `KILL_SWITCH_ENABLED=false` for sandbox smoke tests.
+6. Only consider live trading after reconciliation, precision checks, balances, and SQL audit history are all working.
 
 CCXT sandbox mode is enabled through `set_sandbox_mode(True)` where the exchange supports it. Binance Spot Testnet is the main practical target for crypto execution testing because it supports virtual spot balances and real API order semantics without using live funds.
+
+Example Binance Spot Testnet `.env` values:
+
+```dotenv
+EXCHANGE_IDS=binance
+SANDBOX_MODE=true
+PAPER_TRADING=false
+ENABLE_LIVE_TRADING=true
+KILL_SWITCH_ENABLED=false
+EXCHANGE_API_KEYS_JSON={"binance":{"apiKey":"your_testnet_key","secret":"your_testnet_secret"}}
+```
+
+The Setup Help page includes a **Run sandbox smoke test** button that calls `POST /api/sandbox/smoke-test`. The backend blocks that request unless sandbox mode is active, paper mode is off, live execution is enabled, testnet credentials are present, and the request confirms `confirm_sandbox_order=true`.
 
 ## Useful API Routes
 
@@ -242,6 +256,7 @@ CCXT sandbox mode is enabled through `set_sandbox_mode(True)` where the exchange
 - `GET /api/arbitrage/scan?symbol=BTC/USDT&exchange_ids=binance,kraken,kucoin`
 - `GET /api/balance/{exchange_id}`
 - `POST /api/orders`
+- `POST /api/sandbox/smoke-test`
 - `GET /api/orders/history`
 - `GET /api/environment/status`
 - `GET /api/risk/checks`

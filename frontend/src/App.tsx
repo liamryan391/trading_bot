@@ -30,6 +30,7 @@ import {
   getPrice,
   getStrategySignal,
   placeOrder,
+  runSandboxSmokeTest,
   scanArbitrage,
 } from "./lib/api";
 import { formatNumber, formatPercent } from "./lib/format";
@@ -41,6 +42,7 @@ import type {
   OrderHistoryEntry,
   PriceResponse,
   PublicConfig,
+  SandboxSmokeTestResponse,
   StrategyId,
   Ticker,
   TradeSignal,
@@ -721,6 +723,17 @@ function StrategyOutputPanel({
 }
 
 function SetupHelp({ system, setPage }: { system: LoadState; setPage: (page: Page) => void }) {
+  const [sandboxForm, setSandboxForm] = useState({
+    exchangeId: "binance",
+    symbol: "BTC/USDT",
+    side: "buy" as "buy" | "sell",
+    amount: "0.0001",
+    referencePrice: "50000",
+    confirmSandbox: false,
+  });
+  const [sandboxLoading, setSandboxLoading] = useState(false);
+  const [sandboxNotice, setSandboxNotice] = useState<Notice | undefined>();
+  const [sandboxResult, setSandboxResult] = useState<SandboxSmokeTestResponse | undefined>();
   const commands = [
     "py -3.11 -m venv .venv",
     ".\\.venv\\Scripts\\Activate.ps1",
@@ -730,6 +743,84 @@ function SetupHelp({ system, setPage }: { system: LoadState; setPage: (page: Pag
     "npm.cmd run frontend:build",
     "uvicorn app.main:app --reload",
   ];
+  const testnetEnv = [
+    "EXCHANGE_IDS=binance",
+    "SANDBOX_MODE=true",
+    "PAPER_TRADING=false",
+    "ENABLE_LIVE_TRADING=true",
+    "KILL_SWITCH_ENABLED=false",
+    'EXCHANGE_API_KEYS_JSON={"binance":{"apiKey":"your_testnet_key","secret":"your_testnet_secret"}}',
+  ];
+  const sandboxModeReady = Boolean(system.config?.sandbox_mode);
+
+  useEffect(() => {
+    setSandboxForm((previous) => ({
+      ...previous,
+      symbol: system.config?.default_symbol || previous.symbol,
+      exchangeId: system.config?.exchange_ids.includes("binance")
+        ? "binance"
+        : system.config?.exchange_ids[0] || previous.exchangeId,
+    }));
+  }, [system.config]);
+
+  function updateSandboxField(key: keyof typeof sandboxForm, value: string | boolean) {
+    setSandboxForm((previous) => ({ ...previous, [key]: value }));
+  }
+
+  async function runSandboxSmokeTestFromSetup() {
+    const amount = Number(sandboxForm.amount);
+    const referencePrice = Number(sandboxForm.referencePrice);
+
+    if (!sandboxModeReady) {
+      setSandboxNotice({
+        title: "Sandbox mode is off",
+        body: "Set SANDBOX_MODE=true before sending a Spot Testnet order.",
+        tone: "warning",
+      });
+      return;
+    }
+    if (!sandboxForm.confirmSandbox) {
+      setSandboxNotice({
+        title: "Confirmation needed",
+        body: "Tick the sandbox confirmation box before sending a virtual testnet order.",
+        tone: "warning",
+      });
+      return;
+    }
+    if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(referencePrice) || referencePrice <= 0) {
+      setSandboxNotice({
+        title: "Check the smoke-test values",
+        body: "Amount and reference price must both be positive numbers.",
+        tone: "warning",
+      });
+      return;
+    }
+
+    setSandboxLoading(true);
+    setSandboxNotice(undefined);
+    setSandboxResult(undefined);
+    try {
+      const result = await runSandboxSmokeTest({
+        exchange_id: sandboxForm.exchangeId,
+        symbol: sandboxForm.symbol,
+        side: sandboxForm.side,
+        amount,
+        reference_price: referencePrice,
+        order_type: "market",
+        price: null,
+        confirm_sandbox_order: sandboxForm.confirmSandbox,
+      });
+      setSandboxResult(result);
+    } catch (error) {
+      setSandboxNotice({
+        title: "Sandbox smoke test blocked",
+        body: error instanceof Error ? error.message : "The sandbox smoke test request failed.",
+        tone: "danger",
+      });
+    } finally {
+      setSandboxLoading(false);
+    }
+  }
 
   return (
     <div className="grid gap-5">
@@ -818,6 +909,126 @@ function SetupHelp({ system, setPage }: { system: LoadState; setPage: (page: Pag
           body="Stay in PAPER_TRADING=true until you have checked fees, liquidity, slippage, and exchange permissions with small dry-run orders."
         />
       </section>
+
+      <Panel title="Binance Spot Testnet" icon={KeyRound}>
+        <div className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
+          <div className="grid content-start gap-4">
+            <div className="rounded-lg border border-line bg-slate-50 p-4">
+              <h3 className="text-base font-black">Create testnet keys</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                Log in to{" "}
+                <a
+                  href="https://testnet.binance.vision/"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-black text-teal-800 underline decoration-teal-700/30 underline-offset-4"
+                >
+                  Binance Spot Test Network
+                </a>{" "}
+                with GitHub, generate a Spot Testnet API key, then put only those testnet keys in
+                your local `.env`.
+              </p>
+            </div>
+            <div className="rounded-lg border border-line bg-slate-50 p-4">
+              <h3 className="text-base font-black">Required .env values</h3>
+              <pre className="mt-3 overflow-auto rounded-lg border border-slate-800 bg-[#0d1c18] p-4 text-xs leading-6 text-emerald-100">
+                {testnetEnv.join("\n")}
+              </pre>
+              <p className="mt-3 text-sm leading-6 text-slate-600">
+                The smoke test is intentionally blocked unless sandbox mode is active, paper mode is
+                off, live execution is enabled, and the request is explicitly confirmed. Use testnet
+                keys only and keep withdrawal permissions off for any real exchange key.
+              </p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-1">
+              <ChecklistItem
+                ready={sandboxModeReady}
+                title="Sandbox mode"
+                body={sandboxModeReady ? "SANDBOX_MODE=true" : "Set SANDBOX_MODE=true in .env"}
+              />
+              <ChecklistItem
+                ready={system.config?.paper_trading === false}
+                title="Paper mode"
+                body={system.config?.paper_trading === false ? "PAPER_TRADING=false" : "Still in paper mode"}
+              />
+              <ChecklistItem
+                ready={system.config?.enable_live_trading === true}
+                title="Execution flag"
+                body={
+                  system.config?.enable_live_trading
+                    ? "ENABLE_LIVE_TRADING=true"
+                    : "Set ENABLE_LIVE_TRADING=true for sandbox only"
+                }
+              />
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-line bg-white p-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <TextField
+                label="Exchange"
+                help="Use binance for Binance Spot Testnet."
+                value={sandboxForm.exchangeId}
+                onChange={(value) => updateSandboxField("exchangeId", value)}
+              />
+              <TextField
+                label="Symbol"
+                help="CCXT trading pair for the testnet order."
+                value={sandboxForm.symbol}
+                onChange={(value) => updateSandboxField("symbol", value)}
+              />
+              <SelectField
+                label="Side"
+                help="Small virtual order direction."
+                value={sandboxForm.side}
+                onChange={(value) => updateSandboxField("side", value as "buy" | "sell")}
+                options={[
+                  { value: "buy", label: "Buy" },
+                  { value: "sell", label: "Sell" },
+                ]}
+              />
+              <TextField
+                label="Amount"
+                help="Tiny base-asset amount for the smoke test."
+                value={sandboxForm.amount}
+                onChange={(value) => updateSandboxField("amount", value)}
+              />
+              <TextField
+                label="Reference price"
+                help="Used by risk checks before the order is submitted."
+                value={sandboxForm.referencePrice}
+                onChange={(value) => updateSandboxField("referencePrice", value)}
+                className="md:col-span-2"
+              />
+            </div>
+            <label className="mt-4 flex gap-3 rounded-lg border border-line bg-slate-50 p-4 text-sm leading-6 text-slate-600">
+              <input
+                type="checkbox"
+                checked={sandboxForm.confirmSandbox}
+                onChange={(event) => updateSandboxField("confirmSandbox", event.target.checked)}
+                className="mt-1 h-4 w-4"
+              />
+              <span>
+                Confirm this is a Binance Spot Testnet order using virtual funds, not a live
+                production exchange order.
+              </span>
+            </label>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <ActionButton
+                icon={Play}
+                label="Run sandbox smoke test"
+                loading={sandboxLoading}
+                disabled={!sandboxModeReady || !sandboxForm.confirmSandbox}
+                onClick={() => void runSandboxSmokeTestFromSetup()}
+              />
+            </div>
+            {sandboxNotice && (
+              <Alert tone={sandboxNotice.tone} title={sandboxNotice.title} body={sandboxNotice.body} />
+            )}
+            {sandboxResult ? <PayloadDetails payload={sandboxResult} /> : null}
+          </div>
+        </div>
+      </Panel>
 
       <Panel title="Environment Variables" icon={Gauge}>
         <div className="grid gap-3 md:grid-cols-2">
@@ -1546,12 +1757,13 @@ function StrategyLab({ system }: { system: LoadState }) {
               ["GET", "/api/environment/status", "Paper, sandbox, live, SQL, and last decision status."],
               ["GET", "/api/config", "Public runtime configuration and SQL audit path."],
               ["GET", "/api/exchanges/tickers", "Current exchange bid, ask, last, and timestamps."],
-              ["POST", "/api/strategies/signal", "Trend, mean reversion, GRID, DCA, market making, or arbitrage signal."],
-              ["GET", "/api/arbitrage/scan", "Cross-exchange arbitrage opportunities using CCXT tickers."],
-              ["POST", "/api/orders", "Paper or live order placement with explicit safety gates."],
-              ["GET", "/api/orders/history", "SQL-backed order event history."],
-              ["POST", "/api/backtests/run", "Historical OHLCV replay before sandbox or live orders."],
-            ].map(([method, path, body]) => (
+                ["POST", "/api/strategies/signal", "Trend, mean reversion, GRID, DCA, market making, or arbitrage signal."],
+                ["GET", "/api/arbitrage/scan", "Cross-exchange arbitrage opportunities using CCXT tickers."],
+                ["POST", "/api/orders", "Paper or live order placement with explicit safety gates."],
+                ["POST", "/api/sandbox/smoke-test", "Binance Spot Testnet order smoke test, blocked unless sandbox gates pass."],
+                ["GET", "/api/orders/history", "SQL-backed order event history."],
+                ["POST", "/api/backtests/run", "Historical OHLCV replay before sandbox or live orders."],
+              ].map(([method, path, body]) => (
               <div key={path} className="grid gap-2 rounded-lg border border-line bg-slate-50 p-4 sm:grid-cols-[80px_1fr]">
                 <span className="rounded-md bg-teal-950 px-2 py-1 text-center text-xs font-black text-white">
                   {method}

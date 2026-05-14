@@ -75,6 +75,23 @@ class OrderEndpointTests(unittest.TestCase):
         self.assertEqual(len(checks), 1)
         self.assertEqual(checks[0]["status"], "rejected")
 
+    def test_sandbox_smoke_test_requires_non_paper_execution(self) -> None:
+        response = self.client.post(
+            "/api/sandbox/smoke-test",
+            json={
+                "exchange_id": "binance",
+                "symbol": "BTC/USDT",
+                "side": "buy",
+                "amount": 0.0001,
+                "order_type": "market",
+                "reference_price": 50000,
+                "confirm_sandbox_order": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("PAPER_TRADING=false", response.json()["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

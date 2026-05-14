@@ -16,6 +16,17 @@ class OrderRequest(BaseModel):
     confirm_live_trading: bool = False
 
 
+class SandboxSmokeTestRequest(BaseModel):
+    exchange_id: str = "binance"
+    symbol: str = "BTC/USDT"
+    side: Literal["buy", "sell"] = "buy"
+    amount: float = Field(default=0.0001, gt=0)
+    reference_price: float = Field(default=50000, gt=0)
+    order_type: str = "market"
+    price: float | None = Field(default=None, gt=0)
+    confirm_sandbox_order: bool = False
+
+
 class StrategySignalRequest(BaseModel):
     strategy: Literal[
         "arbitrage",

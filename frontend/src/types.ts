@@ -127,6 +127,24 @@ export type OrderHistoryResponse = {
   orders: OrderHistoryEntry[];
 };
 
+export type SandboxSmokeTestRequest = {
+  exchange_id: string;
+  symbol: string;
+  side: "buy" | "sell";
+  amount: number;
+  reference_price: number;
+  order_type: string;
+  price?: number | null;
+  confirm_sandbox_order: boolean;
+};
+
+export type SandboxSmokeTestResponse = {
+  status: string;
+  message: string;
+  result?: Record<string, unknown>;
+  history_event?: OrderHistoryEntry;
+};
+
 export type EnvironmentStatus = {
   mode: "paper" | "sandbox" | "live" | "blocked";
   paper_trading: boolean;

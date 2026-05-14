@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import Settings, get_settings
 from app.domain import Candle
-from app.schemas import OrderRequest, StrategySignalRequest
+from app.schemas import OrderRequest, SandboxSmokeTestRequest, StrategySignalRequest
 from app.services.coinapi import CoinApiClient, CoinApiError
 from app.services.exchange import ExchangeError, ExchangeGateway
 from app.services.indicators import HAS_TALIB, IndicatorEngine
@@ -437,6 +437,63 @@ async def order(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ExchangeError as exc:
         _record_order_event(request, {"status": "failed", "message": str(exc)}, settings, store)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/api/sandbox/smoke-test")
+async def sandbox_smoke_test(
+    request: SandboxSmokeTestRequest,
+    settings: Settings = Depends(get_settings),
+    gateway: ExchangeGateway = Depends(exchange_gateway),
+    store: OrderEventStore = Depends(order_event_store),
+) -> Any:
+    if not settings.sandbox_mode:
+        raise HTTPException(status_code=422, detail="SANDBOX_MODE must be true for a sandbox smoke test")
+    if settings.paper_trading:
+        raise HTTPException(status_code=422, detail="Set PAPER_TRADING=false to send a sandbox testnet order")
+    if not settings.enable_live_trading:
+        raise HTTPException(status_code=422, detail="Set ENABLE_LIVE_TRADING=true to send a sandbox testnet order")
+    if not request.confirm_sandbox_order:
+        raise HTTPException(status_code=422, detail="Sandbox smoke test requires confirm_sandbox_order=true")
+    if request.exchange_id not in settings.exchange_credentials:
+        raise HTTPException(status_code=422, detail=f"Missing testnet API credentials for {request.exchange_id}")
+
+    order_request = OrderRequest(
+        exchange_id=request.exchange_id,
+        symbol=request.symbol,
+        side=request.side,
+        amount=request.amount,
+        order_type=request.order_type,
+        price=request.price,
+        reference_price=request.reference_price,
+        confirm_live_trading=True,
+    )
+    risk = RiskManager(settings)
+    try:
+        risk.validate_order(order_request.amount, order_request.reference_price, order_request.price)
+        _record_risk_check(order_request, "approved", "Sandbox smoke-test risk checks passed", settings, store)
+        result = await gateway.place_order(
+            exchange_id=order_request.exchange_id,
+            symbol=order_request.symbol,
+            side=order_request.side,
+            amount=order_request.amount,
+            order_type=order_request.order_type,
+            price=order_request.price,
+            confirm_live_trading=True,
+        )
+        event = _record_order_event(order_request, result, settings, store)
+        return {
+            "status": "submitted_to_sandbox",
+            "message": "Sandbox testnet order submitted. Verify the result in order history and on the testnet account.",
+            "result": _json(result),
+            "history_event": event,
+        }
+    except RiskError as exc:
+        _record_risk_check(order_request, "rejected", str(exc), settings, store)
+        _record_order_event(order_request, {"status": "rejected", "message": str(exc)}, settings, store)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ExchangeError as exc:
+        _record_order_event(order_request, {"status": "failed", "message": str(exc)}, settings, store)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 

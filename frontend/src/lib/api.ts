@@ -6,6 +6,8 @@ import type {
   OrderRequest,
   PriceResponse,
   PublicConfig,
+  SandboxSmokeTestRequest,
+  SandboxSmokeTestResponse,
   StrategySignalRequest,
   Ticker,
   TradeSignal,
@@ -99,6 +101,13 @@ export function getStrategySignal(body: StrategySignalRequest) {
 
 export function placeOrder(body: OrderRequest) {
   return request<Record<string, unknown>>("/api/orders", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function runSandboxSmokeTest(body: SandboxSmokeTestRequest) {
+  return request<SandboxSmokeTestResponse>("/api/sandbox/smoke-test", {
     method: "POST",
     body: JSON.stringify(body),
   });
